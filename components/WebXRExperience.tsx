@@ -12,17 +12,12 @@ function Ball() {
     scene.rotation.y += 0.01;
   });
 
-  return (
-    <primitive
-      object={scene}
-      position={[0, 0, -2]}
-      scale={0.45}
-    />
-  );
+  return <primitive object={scene} position={[0, 0, -2]} scale={0.45} />;
 }
 
 export default function WebXRExperience() {
   const store = useMemo(() => createXRStore(), []);
+
   const [supported, setSupported] = useState(false);
   const [checking, setChecking] = useState(true);
 
@@ -35,7 +30,8 @@ export default function WebXRExperience() {
           (await navigator.xr?.isSessionSupported("immersive-ar"));
 
         setSupported(Boolean(ok));
-      } catch {
+      } catch (err) {
+        console.error("Error validando WebXR:", err);
         setSupported(false);
       } finally {
         setChecking(false);
@@ -44,6 +40,15 @@ export default function WebXRExperience() {
 
     checkXR();
   }, []);
+
+  const startAR = async () => {
+    try {
+      await store.enterAR();
+    } catch (err) {
+      console.error("Error al iniciar AR:", err);
+      alert("No se pudo iniciar AR: " + String(err));
+    }
+  };
 
   return (
     <main style={{ width: "100vw", height: "100vh", background: "#000" }}>
@@ -63,18 +68,22 @@ export default function WebXRExperience() {
         {checking && <p>Validando compatibilidad...</p>}
 
         {!checking && supported && (
-          <button
-            onClick={() => store.enterAR()}
-            style={{
-              padding: "14px 24px",
-              borderRadius: 999,
-              border: "none",
-              fontWeight: 700,
-              fontSize: 16,
-            }}
-          >
-            Iniciar experiencia AR
-          </button>
+          <>
+            <p>Abre esta experiencia en Android con Google Chrome.</p>
+
+            <button
+              onClick={startAR}
+              style={{
+                padding: "14px 24px",
+                borderRadius: 999,
+                border: "none",
+                fontWeight: 700,
+                fontSize: 16,
+              }}
+            >
+              Iniciar experiencia AR
+            </button>
+          </>
         )}
 
         {!checking && !supported && (
