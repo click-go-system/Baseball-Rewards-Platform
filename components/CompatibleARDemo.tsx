@@ -2,7 +2,13 @@
 
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
-import { useEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type TouchEvent,
+} from "react";
 
 type OrientationState = {
   alpha: number | null;
@@ -16,6 +22,11 @@ type OrientationState = {
 type TargetState = {
   horizontal: number;
   vertical: number;
+};
+
+type BallOffset = {
+  x: number;
+  y: number;
 };
 
 type ChallengeState = "searching" | "holding" | "found" | "catchEnabled";
@@ -35,7 +46,27 @@ function randomBetween(min: number, max: number) {
   return Math.random() * (max - min) + min;
 }
 
-function BallModel({ visible }: { visible: boolean }) {
+function getTouchDistance(touches: TouchEvent<HTMLDivElement>["touches"]) {
+  if (touches.length < 2) return 0;
+
+  const touchA = touches[0];
+  const touchB = touches[1];
+
+  const dx = touchA.clientX - touchB.clientX;
+  const dy = touchA.clientY - touchB.clientY;
+
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function BallModel({
+  visible,
+  offset,
+  scale,
+}: {
+  visible: boolean;
+  offset: BallOffset;
+  scale: number;
+}) {
   const { scene } = useGLTF("/models/ball.glb");
 
   useFrame(() => {
@@ -44,7 +75,13 @@ function BallModel({ visible }: { visible: boolean }) {
 
   if (!visible) return null;
 
-  return <primitive object={scene} position={[0, 0, 0]} scale={1.25} />;
+  return (
+    <primitive
+      object={scene}
+      position={[offset.x, offset.y, 0]}
+      scale={scale}
+    />
+  );
 }
 
 export default function CompatibleARDemo() {
@@ -82,30 +119,36 @@ export default function CompatibleARDemo() {
 
   const [holdProgress, setHoldProgress] = useState(0);
 
-  const holdStartRef = useRef<number | null>(null);
-  const foundTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const sensorFallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [ballOffset, setBallOffset] = useState<BallOffset>({
+    x: 0,
+    y: -0.35,
+  });
 
-  /**
-   * Sensores flexibles:
-   * - Si alpha existe, usamos alpha como horizontal.
-   * - Si alpha no existe, usamos gamma como horizontal aproximado.
-   * - Si beta existe, usamos beta como vertical.
-   *
-   * Esto ayuda a iPhone, donde a veces beta/gamma sí cambian,
-   * pero alpha puede no llegar bien.
-   */
+  const [ballScale, setBallScale] = useState(1.25);
+
+  const holdStartRef = useRef<number | null>(null);
+  const foundTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sensorFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+
+  const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
+  const lastPinchDistanceRef = useRef<number | null>(null);
+
   const hasAlpha = orientation.alpha !== null;
   const hasBeta = orientation.beta !== null;
   const hasGamma = orientation.gamma !== null;
 
   const hasAnySensor = hasAlpha || hasBeta || hasGamma;
 
-  const sensorHorizontal = hasAlpha
-    ? normalizeAngle(orientation.alpha ?? 0)
-    : hasGamma
+  const alphaLooksFrozen =
+    orientation.alpha !== null && Math.abs(orientation.alpha) < 1 && hasGamma;
+
+  const shouldUseGammaForHorizontal = !hasAlpha || alphaLooksFrozen;
+
+  const sensorHorizontal = shouldUseGammaForHorizontal
     ? normalizeAngle((orientation.gamma ?? 0) + 180)
-    : 0;
+    : normalizeAngle(orientation.alpha ?? 0);
 
   const sensorVertical = hasBeta ? orientation.beta ?? 0 : 70;
 
@@ -120,10 +163,6 @@ export default function CompatibleARDemo() {
   const horizontalDiff = angleDifference(currentHorizontal, target.horizontal);
   const verticalDiff = Math.abs(currentVertical - target.vertical);
 
-  /**
-   * Rango para considerar que el usuario está apuntando al objetivo.
-   * Puedes hacerlo más fácil subiendo estos valores.
-   */
   const horizontalTargetRange = 32;
   const verticalTargetRange = 20;
 
@@ -137,13 +176,7 @@ export default function CompatibleARDemo() {
   const canCapturePrize = challengeState === "catchEnabled";
 
   function generateNewTarget() {
-    const randomHorizontal = randomBetween(0, 360);
-
-    /**
-     * 40 = apuntar más arriba
-     * 70 = frente natural
-     * 100 = apuntar más abajo
-     */
+    const randomHorizontal = randomBetween(100, 260);
     const randomVertical = randomBetween(40, 100);
 
     setTarget({
@@ -173,10 +206,6 @@ export default function CompatibleARDemo() {
           requestPermission?: () => Promise<"granted" | "denied">;
         };
 
-      /**
-       * iOS pide permiso explícito para sensores.
-       * Android normalmente no muestra prompt.
-       */
       if (typeof DeviceOrientationEventTyped?.requestPermission === "function") {
         const permission = await DeviceOrientationEventTyped.requestPermission();
 
@@ -204,7 +233,11 @@ export default function CompatibleARDemo() {
     setError("");
     setChallengeState("searching");
     setHoldProgress(0);
+    setBallOffset({ x: 0, y: -0.35 });
+    setBallScale(1.25);
     holdStartRef.current = null;
+    lastTouchRef.current = null;
+    lastPinchDistanceRef.current = null;
     clearTimers();
 
     try {
@@ -214,10 +247,6 @@ export default function CompatibleARDemo() {
       setStarted(true);
       setControlMode("sensor");
 
-      /**
-       * Si después de 3 segundos no llegaron sensores útiles,
-       * activamos modo manual compatible.
-       */
       sensorFallbackTimeoutRef.current = setTimeout(() => {
         setOrientation((current) => {
           const hasSensorData =
@@ -288,10 +317,7 @@ export default function CompatibleARDemo() {
       return null;
     }
 
-    function updateOrientation(
-      event: DeviceOrientationEvent,
-      source: string
-    ) {
+    function updateOrientation(event: DeviceOrientationEvent, source: string) {
       const heading = getHeading(event);
 
       const nextOrientation: OrientationState = {
@@ -341,9 +367,6 @@ export default function CompatibleARDemo() {
     };
   }, []);
 
-  /**
-   * Lógica de sostener la posición 3 segundos.
-   */
   useEffect(() => {
     if (!started || !cameraReady) return;
     if (challengeState === "found" || challengeState === "catchEnabled") return;
@@ -410,7 +433,11 @@ export default function CompatibleARDemo() {
     setError("");
     setChallengeState("searching");
     setHoldProgress(0);
+    setBallOffset({ x: 0, y: -0.35 });
+    setBallScale(1.25);
     holdStartRef.current = null;
+    lastTouchRef.current = null;
+    lastPinchDistanceRef.current = null;
     generateNewTarget();
   }
 
@@ -428,7 +455,80 @@ export default function CompatibleARDemo() {
     });
   }
 
+  function handleBallTouchStart(event: TouchEvent<HTMLDivElement>) {
+    if (!showBall) return;
+
+    if (event.touches.length === 1) {
+      const touch = event.touches[0];
+
+      lastTouchRef.current = {
+        x: touch.clientX,
+        y: touch.clientY,
+      };
+
+      lastPinchDistanceRef.current = null;
+    }
+
+    if (event.touches.length === 2) {
+      lastPinchDistanceRef.current = getTouchDistance(event.touches);
+      lastTouchRef.current = null;
+    }
+  }
+
+  function handleBallTouchMove(event: TouchEvent<HTMLDivElement>) {
+    if (!showBall) return;
+
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+
+    if (event.touches.length === 1 && lastTouchRef.current) {
+      const touch = event.touches[0];
+
+      const dx = touch.clientX - lastTouchRef.current.x;
+      const dy = touch.clientY - lastTouchRef.current.y;
+
+      const movementFactor = 0.006;
+
+      setBallOffset((current) => ({
+        x: Math.max(-2.2, Math.min(2.2, current.x + dx * movementFactor)),
+        y: Math.max(-2.2, Math.min(2.2, current.y - dy * movementFactor)),
+      }));
+
+      lastTouchRef.current = {
+        x: touch.clientX,
+        y: touch.clientY,
+      };
+    }
+
+    if (event.touches.length === 2) {
+      const currentDistance = getTouchDistance(event.touches);
+
+      if (lastPinchDistanceRef.current) {
+        const delta = currentDistance - lastPinchDistanceRef.current;
+        const zoomFactor = 0.006;
+
+        setBallScale((current) =>
+          Math.max(0.6, Math.min(3.2, current + delta * zoomFactor))
+        );
+      }
+
+      lastPinchDistanceRef.current = currentDistance;
+    }
+  }
+
+  function handleBallTouchEnd() {
+    lastTouchRef.current = null;
+    lastPinchDistanceRef.current = null;
+  }
+
   function getInstructionMessage() {
+    if (showBall) {
+      return canCapturePrize
+        ? "🎯 Premio listo para capturar"
+        : "⚾ Premio revelado";
+    }
+
     if (controlMode === "sensor" && !hasAnySensor) {
       return "⏳ Esperando sensores del celular...";
     }
@@ -437,24 +537,17 @@ export default function CompatibleARDemo() {
       return "✅ Mantén esta posición";
     }
 
-    if (challengeState === "found") {
-      return "⚾ Premio encontrado";
-    }
-
-    if (challengeState === "catchEnabled") {
-      return "🎯 Premio listo para capturar";
-    }
-
-    if (horizontalDiff > horizontalTargetRange && verticalDiff > verticalTargetRange) {
+    if (
+      horizontalDiff > horizontalTargetRange &&
+      verticalDiff > verticalTargetRange
+    ) {
       return controlMode === "manual"
         ? "🔎 Usa los controles para buscar el premio"
         : "🔎 Muévete a los lados y arriba/abajo";
     }
 
     if (horizontalDiff > horizontalTargetRange) {
-      return controlMode === "manual"
-        ? "↔️ Ajusta horizontal"
-        : "↔️ Gira a los lados";
+      return controlMode === "manual" ? "↔️ Ajusta horizontal" : "↔️ Gira a los lados";
     }
 
     if (verticalDiff > verticalTargetRange) {
@@ -484,17 +577,7 @@ export default function CompatibleARDemo() {
         <h1>🎉 Premio capturado</h1>
         <p>Ganaste tu recompensa Baseball Rewards.</p>
 
-        <button
-          onClick={resetDemo}
-          style={{
-            marginTop: 20,
-            padding: "14px 24px",
-            borderRadius: 999,
-            border: "none",
-            fontWeight: 700,
-            fontSize: 16,
-          }}
-        >
+        <button onClick={resetDemo} style={primaryButtonStyle}>
           Reiniciar demo
         </button>
       </main>
@@ -527,20 +610,11 @@ export default function CompatibleARDemo() {
           <h1>Baseball Rewards AR</h1>
 
           <p style={{ maxWidth: 420 }}>
-            Mueve tu teléfono hasta llegar al objetivo. Si tu navegador no
-            entrega sensores, se activará un modo compatible con controles.
+            Mueve tu teléfono hasta llegar al objetivo. Cuando lo mantengas 3
+            segundos, el premio aparecerá en cámara.
           </p>
 
-          <button
-            onClick={startExperience}
-            style={{
-              padding: "14px 24px",
-              borderRadius: 999,
-              border: "none",
-              fontWeight: 700,
-              fontSize: 16,
-            }}
-          >
+          <button onClick={startExperience} style={primaryButtonStyle}>
             Iniciar búsqueda
           </button>
 
@@ -568,11 +642,15 @@ export default function CompatibleARDemo() {
 
           {cameraReady && (
             <div
+              onTouchStart={handleBallTouchStart}
+              onTouchMove={handleBallTouchMove}
+              onTouchEnd={handleBallTouchEnd}
               style={{
                 position: "fixed",
                 inset: 0,
                 zIndex: 2,
-                pointerEvents: "none",
+                touchAction: "none",
+                pointerEvents: showBall ? "auto" : "none",
               }}
             >
               <Canvas
@@ -582,161 +660,110 @@ export default function CompatibleARDemo() {
               >
                 <ambientLight intensity={1.5} />
                 <directionalLight position={[5, 5, 5]} intensity={2} />
-                <BallModel visible={showBall} />
+                <BallModel
+                  visible={showBall}
+                  offset={ballOffset}
+                  scale={ballScale}
+                />
               </Canvas>
             </div>
           )}
 
-          <div
-            style={{
-              position: "fixed",
-              top: 16,
-              left: 14,
-              right: 14,
-              zIndex: 4,
-              color: "white",
-              textAlign: "center",
-              background: "rgba(0,0,0,0.68)",
-              borderRadius: 18,
-              padding: 16,
-              boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
-            }}
-          >
-            <strong style={{ fontSize: 18 }}>{getInstructionMessage()}</strong>
-
-            <div
-              style={{
-                marginTop: 12,
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 10,
-              }}
-            >
-              <div
-                style={{
-                  background: "rgba(255,255,255,0.1)",
-                  borderRadius: 14,
-                  padding: 12,
-                }}
-              >
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Objetivo H
-                </div>
-                <div style={{ fontSize: 30, fontWeight: 900 }}>
-                  {Math.round(target.horizontal)}°
-                </div>
-              </div>
+          {!showBall && (
+            <div style={debugCardStyle}>
+              <strong style={{ fontSize: 18 }}>{getInstructionMessage()}</strong>
 
               <div
                 style={{
-                  background: "rgba(255,255,255,0.1)",
-                  borderRadius: 14,
-                  padding: 12,
-                }}
-              >
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Objetivo V
-                </div>
-                <div style={{ fontSize: 30, fontWeight: 900 }}>
-                  {Math.round(target.vertical)}°
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                marginTop: 10,
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 10,
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 11, opacity: 0.7 }}>Actual H</div>
-                <div style={{ fontSize: 20, fontWeight: 800 }}>
-                  {Math.round(currentHorizontal)}°
-                </div>
-              </div>
-
-              <div>
-                <div style={{ fontSize: 11, opacity: 0.7 }}>Actual V</div>
-                <div style={{ fontSize: 20, fontWeight: 800 }}>
-                  {Math.round(currentVertical)}°
-                </div>
-              </div>
-            </div>
-
-            <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.85 }}>
-              Diferencia H: {Math.round(horizontalDiff)}° / V:{" "}
-              {Math.round(verticalDiff)}°
-            </p>
-
-            <p style={{ margin: "4px 0 0", opacity: 0.6, fontSize: 11 }}>
-              Modo: {controlMode === "sensor" ? "sensores" : "compatible"} /
-              Sensor: {orientation.source}
-            </p>
-
-            {(challengeState === "holding" ||
-              challengeState === "found" ||
-              challengeState === "catchEnabled") && (
-              <div
-                style={{
-                  width: "100%",
-                  height: 12,
-                  background: "rgba(255,255,255,0.18)",
-                  borderRadius: 999,
-                  overflow: "hidden",
                   marginTop: 12,
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 10,
                 }}
               >
-                <div
-                  style={{
-                    width: `${holdProgress}%`,
-                    height: "100%",
-                    background:
-                      challengeState === "catchEnabled"
-                        ? "#2cff8f"
-                        : "#ffd24a",
-                    transition: "width 120ms linear",
-                  }}
-                />
-              </div>
-            )}
-          </div>
+                <div style={debugBoxStyle}>
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>Objetivo H</div>
+                  <div style={{ fontSize: 30, fontWeight: 900 }}>
+                    {Math.round(target.horizontal)}°
+                  </div>
+                </div>
 
-          {error && (
-            <div
-              style={{
-                position: "fixed",
-                top: 225,
-                left: 20,
-                right: 20,
-                zIndex: 6,
-                color: "#ffb4b4",
-                background: "rgba(0,0,0,0.75)",
-                padding: 12,
-                borderRadius: 12,
-                textAlign: "center",
-              }}
-            >
-              {error}
+                <div style={debugBoxStyle}>
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>Objetivo V</div>
+                  <div style={{ fontSize: 30, fontWeight: 900 }}>
+                    {Math.round(target.vertical)}°
+                  </div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  marginTop: 10,
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 10,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 11, opacity: 0.7 }}>Actual H</div>
+                  <div style={{ fontSize: 20, fontWeight: 800 }}>
+                    {Math.round(currentHorizontal)}°
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 11, opacity: 0.7 }}>Actual V</div>
+                  <div style={{ fontSize: 20, fontWeight: 800 }}>
+                    {Math.round(currentVertical)}°
+                  </div>
+                </div>
+              </div>
+
+              <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.85 }}>
+                Diferencia H: {Math.round(horizontalDiff)}° / V:{" "}
+                {Math.round(verticalDiff)}°
+              </p>
+
+              <p style={{ margin: "4px 0 0", opacity: 0.6, fontSize: 11 }}>
+                Modo: {controlMode === "sensor" ? "sensores" : "compatible"} /
+                Sensor: {orientation.source} / H:{" "}
+                {shouldUseGammaForHorizontal ? "gamma" : "alpha"}
+              </p>
+
+              {(challengeState === "holding" ||
+                challengeState === "found" ||
+                challengeState === "catchEnabled") && (
+                <div style={progressContainerStyle}>
+                  <div
+                    style={{
+                      width: `${holdProgress}%`,
+                      height: "100%",
+                      background:
+                        challengeState === "catchEnabled"
+                          ? "#2cff8f"
+                          : "#ffd24a",
+                      transition: "width 120ms linear",
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )}
 
-          {controlMode === "manual" && cameraReady && (
-            <div
-              style={{
-                position: "fixed",
-                left: 14,
-                right: 14,
-                bottom: 86,
-                zIndex: 5,
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr 1fr",
-                gap: 10,
-                alignItems: "center",
-              }}
-            >
+          {showBall && (
+            <div style={miniCardStyle}>
+              <strong style={{ fontSize: 17 }}>{getInstructionMessage()}</strong>
+
+              <p style={{ margin: "6px 0 0", fontSize: 12, opacity: 0.85 }}>
+                Arrastra la pelota con un dedo. Usa dos dedos para hacer zoom.
+              </p>
+            </div>
+          )}
+
+          {error && !showBall && <div style={errorBoxStyle}>{error}</div>}
+
+          {controlMode === "manual" && cameraReady && !showBall && (
+            <div style={manualControlsWrapperStyle}>
               <button
                 onClick={() => moveManual(-8, 0)}
                 style={manualButtonStyle}
@@ -744,12 +771,7 @@ export default function CompatibleARDemo() {
                 ← H
               </button>
 
-              <div
-                style={{
-                  display: "grid",
-                  gap: 8,
-                }}
-              >
+              <div style={{ display: "grid", gap: 8 }}>
                 <button
                   onClick={() => moveManual(0, -5)}
                   style={manualButtonStyle}
@@ -774,7 +796,7 @@ export default function CompatibleARDemo() {
             </div>
           )}
 
-          {challengeState === "holding" && cameraReady && (
+          {challengeState === "holding" && cameraReady && !showBall && (
             <div style={bottomPillStyle}>Mantén 3 segundos...</div>
           )}
 
@@ -788,24 +810,13 @@ export default function CompatibleARDemo() {
                 stopCamera();
                 setCaptured(true);
               }}
-              style={{
-                position: "fixed",
-                zIndex: 5,
-                bottom: 30,
-                left: "50%",
-                transform: "translateX(-50%)",
-                padding: "14px 24px",
-                borderRadius: 999,
-                border: "none",
-                fontWeight: 900,
-                fontSize: 16,
-              }}
+              style={captureButtonStyle}
             >
-              Capturar premio
+              🎁 Capturar premio
             </button>
           )}
 
-          {challengeState === "searching" && cameraReady && (
+          {challengeState === "searching" && cameraReady && !showBall && (
             <div style={bottomPillStyle}>
               {controlMode === "manual"
                 ? "Usa los controles para llegar al objetivo"
@@ -818,7 +829,85 @@ export default function CompatibleARDemo() {
   );
 }
 
-const manualButtonStyle: React.CSSProperties = {
+const primaryButtonStyle: CSSProperties = {
+  marginTop: 20,
+  padding: "14px 24px",
+  borderRadius: 999,
+  border: "none",
+  fontWeight: 800,
+  fontSize: 16,
+};
+
+const debugCardStyle: CSSProperties = {
+  position: "fixed",
+  top: 16,
+  left: 14,
+  right: 14,
+  zIndex: 4,
+  color: "white",
+  textAlign: "center",
+  background: "rgba(0,0,0,0.68)",
+  borderRadius: 18,
+  padding: 16,
+  boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
+};
+
+const debugBoxStyle: CSSProperties = {
+  background: "rgba(255,255,255,0.1)",
+  borderRadius: 14,
+  padding: 12,
+};
+
+const miniCardStyle: CSSProperties = {
+  position: "fixed",
+  top: 18,
+  left: 18,
+  right: 18,
+  zIndex: 4,
+  color: "white",
+  textAlign: "center",
+  background: "rgba(0,0,0,0.55)",
+  backdropFilter: "blur(8px)",
+  borderRadius: 999,
+  padding: "12px 18px",
+  boxShadow: "0 8px 24px rgba(0,0,0,0.28)",
+};
+
+const progressContainerStyle: CSSProperties = {
+  width: "100%",
+  height: 12,
+  background: "rgba(255,255,255,0.18)",
+  borderRadius: 999,
+  overflow: "hidden",
+  marginTop: 12,
+};
+
+const errorBoxStyle: CSSProperties = {
+  position: "fixed",
+  top: 225,
+  left: 20,
+  right: 20,
+  zIndex: 6,
+  color: "#ffb4b4",
+  background: "rgba(0,0,0,0.75)",
+  padding: 12,
+  borderRadius: 12,
+  textAlign: "center",
+};
+
+const manualControlsWrapperStyle: CSSProperties = {
+  position: "fixed",
+  left: 14,
+  right: 14,
+  bottom: 86,
+  zIndex: 5,
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr 1fr",
+  gap: 10,
+  alignItems: "center",
+};
+
+const manualButtonStyle: CSSProperties = {
   padding: "14px 12px",
   borderRadius: 16,
   border: "none",
@@ -828,7 +917,7 @@ const manualButtonStyle: React.CSSProperties = {
   fontSize: 15,
 };
 
-const bottomPillStyle: React.CSSProperties = {
+const bottomPillStyle: CSSProperties = {
   position: "fixed",
   zIndex: 5,
   bottom: 30,
@@ -840,4 +929,21 @@ const bottomPillStyle: React.CSSProperties = {
   borderRadius: 999,
   fontWeight: 800,
   whiteSpace: "nowrap",
+};
+
+const captureButtonStyle: CSSProperties = {
+  position: "fixed",
+  zIndex: 7,
+  bottom: 34,
+  left: "50%",
+  transform: "translateX(-50%)",
+  padding: "18px 34px",
+  borderRadius: 999,
+  border: "none",
+  fontWeight: 950,
+  fontSize: 19,
+  color: "#111",
+  background:
+    "linear-gradient(135deg, #ffdd55 0%, #ff9f1c 45%, #ff6b00 100%)",
+  boxShadow: "0 12px 32px rgba(255, 157, 0, 0.42)",
 };
