@@ -25,15 +25,18 @@ export default function WebXRExperience() {
   useEffect(() => {
     async function checkXR() {
       try {
-        const ok =
-          typeof navigator !== "undefined" &&
-          "xr" in navigator &&
-          (await navigator.xr?.isSessionSupported("immersive-ar"));
+        if (!navigator.xr) {
+          setSupported(false);
+          setMessage("navigator.xr no está disponible.");
+          return;
+        }
 
-        setSupported(Boolean(ok));
+        const ok = await navigator.xr.isSessionSupported("immersive-ar");
+        setSupported(ok);
+        setMessage(ok ? "AR compatible. Puedes iniciar." : "AR no compatible.");
       } catch (err) {
-        setMessage("Error validando WebXR: " + String(err));
         setSupported(false);
+        setMessage("Error validando AR: " + String(err));
       } finally {
         setChecking(false);
       }
@@ -49,7 +52,8 @@ export default function WebXRExperience() {
       await store.enterAR();
       setMessage("AR iniciado.");
     } catch (err) {
-      setMessage("No se pudo iniciar AR: " + String(err));
+      console.error(err);
+      setMessage("Error al iniciar AR: " + String(err));
     }
   };
 
@@ -64,6 +68,9 @@ export default function WebXRExperience() {
           zIndex: 10,
           color: "white",
           textAlign: "center",
+          background: "rgba(0,0,0,0.45)",
+          padding: 16,
+          borderRadius: 16,
         }}
       >
         <h1>Baseball Rewards AR</h1>
