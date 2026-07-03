@@ -10,12 +10,17 @@ type OrientationState = {
   gamma: number | null;
   absolute: boolean;
   source: string;
+  lastUpdate: number | null;
 };
 
 type TargetState = {
-  alpha: number;
-  beta: number;
+  horizontal: number;
+  vertical: number;
 };
+
+type ChallengeState = "searching" | "holding" | "found" | "catchEnabled";
+
+type ControlMode = "sensor" | "manual";
 
 function normalizeAngle(angle: number) {
   return ((angle % 360) + 360) % 360;
@@ -51,54 +56,80 @@ export default function CompatibleARDemo() {
   const [error, setError] = useState("");
   const [stream, setStream] = useState<MediaStream | null>(null);
 
+  const [controlMode, setControlMode] = useState<ControlMode>("sensor");
+
   const [orientation, setOrientation] = useState<OrientationState>({
     alpha: null,
     beta: null,
     gamma: null,
     absolute: false,
     source: "sin datos",
+    lastUpdate: null,
+  });
+
+  const [manualPosition, setManualPosition] = useState<TargetState>({
+    horizontal: 180,
+    vertical: 70,
   });
 
   const [target, setTarget] = useState<TargetState>({
-    alpha: 40,
-    beta: 70,
+    horizontal: 40,
+    vertical: 70,
   });
 
-  /**
-   * Estados del reto:
-   * searching = buscando objetivo
-   * holding = ya está en rango, debe sostener 3 segundos
-   * found = objetivo confirmado, aparece pelota
-   * catchEnabled = ya puede capturar
-   */
-  const [challengeState, setChallengeState] = useState<
-    "searching" | "holding" | "found" | "catchEnabled"
-  >("searching");
+  const [challengeState, setChallengeState] =
+    useState<ChallengeState>("searching");
 
   const [holdProgress, setHoldProgress] = useState(0);
+
   const holdStartRef = useRef<number | null>(null);
   const foundTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const hasOrientation = orientation.alpha !== null && orientation.beta !== null;
-
-  const currentAlpha = hasOrientation
-    ? normalizeAngle(orientation.alpha ?? 0)
-    : 0;
-
-  const currentBeta = hasOrientation ? orientation.beta ?? 0 : 0;
-
-  const alphaDiff = angleDifference(currentAlpha, target.alpha);
-  const betaDiff = Math.abs(currentBeta - target.beta);
+  const sensorFallbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   /**
-   * Rango para considerar que ya llegó al objetivo.
-   * Para demo lo dejamos alcanzable.
+   * Sensores flexibles:
+   * - Si alpha existe, usamos alpha como horizontal.
+   * - Si alpha no existe, usamos gamma como horizontal aproximado.
+   * - Si beta existe, usamos beta como vertical.
+   *
+   * Esto ayuda a iPhone, donde a veces beta/gamma sí cambian,
+   * pero alpha puede no llegar bien.
    */
-  const alphaTargetRange = 28;
-  const betaTargetRange = 16;
+  const hasAlpha = orientation.alpha !== null;
+  const hasBeta = orientation.beta !== null;
+  const hasGamma = orientation.gamma !== null;
+
+  const hasAnySensor = hasAlpha || hasBeta || hasGamma;
+
+  const sensorHorizontal = hasAlpha
+    ? normalizeAngle(orientation.alpha ?? 0)
+    : hasGamma
+    ? normalizeAngle((orientation.gamma ?? 0) + 180)
+    : 0;
+
+  const sensorVertical = hasBeta ? orientation.beta ?? 0 : 70;
+
+  const currentHorizontal =
+    controlMode === "manual"
+      ? normalizeAngle(manualPosition.horizontal)
+      : normalizeAngle(sensorHorizontal);
+
+  const currentVertical =
+    controlMode === "manual" ? manualPosition.vertical : sensorVertical;
+
+  const horizontalDiff = angleDifference(currentHorizontal, target.horizontal);
+  const verticalDiff = Math.abs(currentVertical - target.vertical);
+
+  /**
+   * Rango para considerar que el usuario está apuntando al objetivo.
+   * Puedes hacerlo más fácil subiendo estos valores.
+   */
+  const horizontalTargetRange = 32;
+  const verticalTargetRange = 20;
 
   const isInsideTarget =
-    hasOrientation && alphaDiff <= alphaTargetRange && betaDiff <= betaTargetRange;
+    horizontalDiff <= horizontalTargetRange &&
+    verticalDiff <= verticalTargetRange;
 
   const showBall =
     challengeState === "found" || challengeState === "catchEnabled";
@@ -106,20 +137,31 @@ export default function CompatibleARDemo() {
   const canCapturePrize = challengeState === "catchEnabled";
 
   function generateNewTarget() {
-    const randomAlpha = randomBetween(0, 360);
+    const randomHorizontal = randomBetween(0, 360);
 
     /**
-     * Rango vertical:
-     * 40 = apuntar más hacia arriba
+     * 40 = apuntar más arriba
      * 70 = frente natural
-     * 100 = apuntar más hacia abajo
+     * 100 = apuntar más abajo
      */
-    const randomBeta = randomBetween(40, 100);
+    const randomVertical = randomBetween(40, 100);
 
     setTarget({
-      alpha: randomAlpha,
-      beta: randomBeta,
+      horizontal: randomHorizontal,
+      vertical: randomVertical,
     });
+  }
+
+  function clearTimers() {
+    if (foundTimeoutRef.current) {
+      clearTimeout(foundTimeoutRef.current);
+      foundTimeoutRef.current = null;
+    }
+
+    if (sensorFallbackTimeoutRef.current) {
+      clearTimeout(sensorFallbackTimeoutRef.current);
+      sensorFallbackTimeoutRef.current = null;
+    }
   }
 
   async function requestOrientationPermission() {
@@ -131,11 +173,18 @@ export default function CompatibleARDemo() {
           requestPermission?: () => Promise<"granted" | "denied">;
         };
 
+      /**
+       * iOS pide permiso explícito para sensores.
+       * Android normalmente no muestra prompt.
+       */
       if (typeof DeviceOrientationEventTyped?.requestPermission === "function") {
         const permission = await DeviceOrientationEventTyped.requestPermission();
 
         if (permission !== "granted") {
-          setError("No se concedió permiso para usar el movimiento del celular.");
+          setError(
+            "No se concedió permiso para usar el movimiento del celular. Se activará modo compatible."
+          );
+          setControlMode("manual");
           return false;
         }
       }
@@ -143,7 +192,10 @@ export default function CompatibleARDemo() {
       return true;
     } catch (err) {
       console.error(err);
-      setError("No se pudo solicitar permiso de movimiento.");
+      setError(
+        "No se pudo solicitar permiso de movimiento. Se activará modo compatible."
+      );
+      setControlMode("manual");
       return false;
     }
   }
@@ -153,19 +205,36 @@ export default function CompatibleARDemo() {
     setChallengeState("searching");
     setHoldProgress(0);
     holdStartRef.current = null;
-
-    if (foundTimeoutRef.current) {
-      clearTimeout(foundTimeoutRef.current);
-      foundTimeoutRef.current = null;
-    }
+    clearTimers();
 
     try {
-      const orientationAllowed = await requestOrientationPermission();
-
-      if (!orientationAllowed) return;
+      await requestOrientationPermission();
 
       generateNewTarget();
       setStarted(true);
+      setControlMode("sensor");
+
+      /**
+       * Si después de 3 segundos no llegaron sensores útiles,
+       * activamos modo manual compatible.
+       */
+      sensorFallbackTimeoutRef.current = setTimeout(() => {
+        setOrientation((current) => {
+          const hasSensorData =
+            current.alpha !== null ||
+            current.beta !== null ||
+            current.gamma !== null;
+
+          if (!hasSensorData) {
+            setControlMode("manual");
+            setError(
+              "Tu navegador no entregó sensores de movimiento. Activamos modo compatible."
+            );
+          }
+
+          return current;
+        });
+      }, 3000);
 
       const cameraStream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -219,28 +288,40 @@ export default function CompatibleARDemo() {
       return null;
     }
 
-    function handleOrientation(event: DeviceOrientationEvent) {
+    function updateOrientation(
+      event: DeviceOrientationEvent,
+      source: string
+    ) {
       const heading = getHeading(event);
 
-      setOrientation({
+      const nextOrientation: OrientationState = {
         alpha: heading,
         beta: typeof event.beta === "number" ? event.beta : null,
         gamma: typeof event.gamma === "number" ? event.gamma : null,
         absolute: Boolean(event.absolute),
-        source: "deviceorientation",
-      });
+        source,
+        lastUpdate: Date.now(),
+      };
+
+      setOrientation(nextOrientation);
+
+      const hasUsefulData =
+        nextOrientation.alpha !== null ||
+        nextOrientation.beta !== null ||
+        nextOrientation.gamma !== null;
+
+      if (hasUsefulData) {
+        setControlMode("sensor");
+        setError("");
+      }
+    }
+
+    function handleOrientation(event: DeviceOrientationEvent) {
+      updateOrientation(event, "deviceorientation");
     }
 
     function handleOrientationAbsolute(event: DeviceOrientationEvent) {
-      const heading = getHeading(event);
-
-      setOrientation({
-        alpha: heading,
-        beta: typeof event.beta === "number" ? event.beta : null,
-        gamma: typeof event.gamma === "number" ? event.gamma : null,
-        absolute: Boolean(event.absolute),
-        source: "deviceorientationabsolute",
-      });
+      updateOrientation(event, "deviceorientationabsolute");
     }
 
     window.addEventListener("deviceorientation", handleOrientation, true);
@@ -261,7 +342,7 @@ export default function CompatibleARDemo() {
   }, []);
 
   /**
-   * Lógica de sostener el teléfono 3 segundos en el objetivo.
+   * Lógica de sostener la posición 3 segundos.
    */
   useEffect(() => {
     if (!started || !cameraReady) return;
@@ -322,11 +403,7 @@ export default function CompatibleARDemo() {
 
   function resetDemo() {
     stopCamera();
-
-    if (foundTimeoutRef.current) {
-      clearTimeout(foundTimeoutRef.current);
-      foundTimeoutRef.current = null;
-    }
+    clearTimers();
 
     setCaptured(false);
     setStarted(false);
@@ -337,13 +414,27 @@ export default function CompatibleARDemo() {
     generateNewTarget();
   }
 
+  function moveManual(horizontalDelta: number, verticalDelta: number) {
+    setManualPosition((current) => {
+      const nextVertical = Math.max(
+        0,
+        Math.min(140, current.vertical + verticalDelta)
+      );
+
+      return {
+        horizontal: normalizeAngle(current.horizontal + horizontalDelta),
+        vertical: nextVertical,
+      };
+    });
+  }
+
   function getInstructionMessage() {
-    if (!hasOrientation) {
+    if (controlMode === "sensor" && !hasAnySensor) {
       return "⏳ Esperando sensores del celular...";
     }
 
     if (challengeState === "holding") {
-      return "✅ Mantén el celular en esta posición";
+      return "✅ Mantén esta posición";
     }
 
     if (challengeState === "found") {
@@ -354,16 +445,22 @@ export default function CompatibleARDemo() {
       return "🎯 Premio listo para capturar";
     }
 
-    if (alphaDiff > alphaTargetRange && betaDiff > betaTargetRange) {
-      return "🔎 Muévete a los lados y arriba/abajo";
+    if (horizontalDiff > horizontalTargetRange && verticalDiff > verticalTargetRange) {
+      return controlMode === "manual"
+        ? "🔎 Usa los controles para buscar el premio"
+        : "🔎 Muévete a los lados y arriba/abajo";
     }
 
-    if (alphaDiff > alphaTargetRange) {
-      return "↔️ Gira a los lados para encontrar el premio";
+    if (horizontalDiff > horizontalTargetRange) {
+      return controlMode === "manual"
+        ? "↔️ Ajusta horizontal"
+        : "↔️ Gira a los lados";
     }
 
-    if (betaDiff > betaTargetRange) {
-      return "↕️ Inclina el celular arriba o abajo";
+    if (verticalDiff > verticalTargetRange) {
+      return controlMode === "manual"
+        ? "↕️ Ajusta vertical"
+        : "↕️ Inclina el celular arriba o abajo";
     }
 
     return "🔎 Busca el premio";
@@ -430,8 +527,8 @@ export default function CompatibleARDemo() {
           <h1>Baseball Rewards AR</h1>
 
           <p style={{ maxWidth: 420 }}>
-            Mueve tu teléfono hasta llegar al objetivo. Cuando llegues, mantén
-            esa posición durante 3 segundos para revelar el premio.
+            Mueve tu teléfono hasta llegar al objetivo. Si tu navegador no
+            entrega sensores, se activará un modo compatible con controles.
           </p>
 
           <button
@@ -523,10 +620,10 @@ export default function CompatibleARDemo() {
                 }}
               >
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Objetivo horizontal
+                  Objetivo H
                 </div>
-                <div style={{ fontSize: 28, fontWeight: 800 }}>
-                  {Math.round(target.alpha)}°
+                <div style={{ fontSize: 30, fontWeight: 900 }}>
+                  {Math.round(target.horizontal)}°
                 </div>
               </div>
 
@@ -538,58 +635,46 @@ export default function CompatibleARDemo() {
                 }}
               >
                 <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Objetivo vertical
+                  Objetivo V
                 </div>
-                <div style={{ fontSize: 28, fontWeight: 800 }}>
-                  {Math.round(target.beta)}°
+                <div style={{ fontSize: 30, fontWeight: 900 }}>
+                  {Math.round(target.vertical)}°
                 </div>
               </div>
             </div>
 
-            {hasOrientation ? (
-              <>
-                <div
-                  style={{
-                    marginTop: 10,
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 10,
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 11, opacity: 0.7 }}>
-                      Actual H
-                    </div>
-                    <div style={{ fontSize: 18, fontWeight: 700 }}>
-                      {Math.round(currentAlpha)}°
-                    </div>
-                  </div>
-
-                  <div>
-                    <div style={{ fontSize: 11, opacity: 0.7 }}>
-                      Actual V
-                    </div>
-                    <div style={{ fontSize: 18, fontWeight: 700 }}>
-                      {Math.round(currentBeta)}°
-                    </div>
-                  </div>
+            <div
+              style={{
+                marginTop: 10,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 10,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 11, opacity: 0.7 }}>Actual H</div>
+                <div style={{ fontSize: 20, fontWeight: 800 }}>
+                  {Math.round(currentHorizontal)}°
                 </div>
+              </div>
 
-                <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.85 }}>
-                  Diferencia H: {Math.round(alphaDiff)}° / V:{" "}
-                  {Math.round(betaDiff)}°
-                </p>
+              <div>
+                <div style={{ fontSize: 11, opacity: 0.7 }}>Actual V</div>
+                <div style={{ fontSize: 20, fontWeight: 800 }}>
+                  {Math.round(currentVertical)}°
+                </div>
+              </div>
+            </div>
 
-                <p style={{ margin: "4px 0 0", opacity: 0.55, fontSize: 11 }}>
-                  Sensor: {orientation.source} / Absolute:{" "}
-                  {orientation.absolute ? "sí" : "no"}
-                </p>
-              </>
-            ) : (
-              <p style={{ margin: "10px 0 0", color: "#ffdf8a" }}>
-                Esperando datos del sensor de movimiento...
-              </p>
-            )}
+            <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.85 }}>
+              Diferencia H: {Math.round(horizontalDiff)}° / V:{" "}
+              {Math.round(verticalDiff)}°
+            </p>
+
+            <p style={{ margin: "4px 0 0", opacity: 0.6, fontSize: 11 }}>
+              Modo: {controlMode === "sensor" ? "sensores" : "compatible"} /
+              Sensor: {orientation.source}
+            </p>
 
             {(challengeState === "holding" ||
               challengeState === "found" ||
@@ -623,7 +708,7 @@ export default function CompatibleARDemo() {
             <div
               style={{
                 position: "fixed",
-                top: 210,
+                top: 225,
                 left: 20,
                 right: 20,
                 zIndex: 6,
@@ -638,42 +723,63 @@ export default function CompatibleARDemo() {
             </div>
           )}
 
-          {challengeState === "holding" && cameraReady && (
+          {controlMode === "manual" && cameraReady && (
             <div
               style={{
                 position: "fixed",
+                left: 14,
+                right: 14,
+                bottom: 86,
                 zIndex: 5,
-                bottom: 30,
-                left: "50%",
-                transform: "translateX(-50%)",
-                color: "white",
-                background: "rgba(0,0,0,0.72)",
-                padding: "12px 18px",
-                borderRadius: 999,
-                fontWeight: 700,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 10,
+                alignItems: "center",
               }}
             >
-              Mantén 3 segundos...
+              <button
+                onClick={() => moveManual(-8, 0)}
+                style={manualButtonStyle}
+              >
+                ← H
+              </button>
+
+              <div
+                style={{
+                  display: "grid",
+                  gap: 8,
+                }}
+              >
+                <button
+                  onClick={() => moveManual(0, -5)}
+                  style={manualButtonStyle}
+                >
+                  ↑ V
+                </button>
+
+                <button
+                  onClick={() => moveManual(0, 5)}
+                  style={manualButtonStyle}
+                >
+                  ↓ V
+                </button>
+              </div>
+
+              <button
+                onClick={() => moveManual(8, 0)}
+                style={manualButtonStyle}
+              >
+                H →
+              </button>
             </div>
           )}
 
+          {challengeState === "holding" && cameraReady && (
+            <div style={bottomPillStyle}>Mantén 3 segundos...</div>
+          )}
+
           {challengeState === "found" && cameraReady && (
-            <div
-              style={{
-                position: "fixed",
-                zIndex: 5,
-                bottom: 30,
-                left: "50%",
-                transform: "translateX(-50%)",
-                color: "white",
-                background: "rgba(0,0,0,0.72)",
-                padding: "12px 18px",
-                borderRadius: 999,
-                fontWeight: 700,
-              }}
-            >
-              Premio revelado...
-            </div>
+            <div style={bottomPillStyle}>Premio revelado...</div>
           )}
 
           {canCapturePrize && cameraReady && (
@@ -691,7 +797,7 @@ export default function CompatibleARDemo() {
                 padding: "14px 24px",
                 borderRadius: 999,
                 border: "none",
-                fontWeight: 800,
+                fontWeight: 900,
                 fontSize: 16,
               }}
             >
@@ -700,22 +806,10 @@ export default function CompatibleARDemo() {
           )}
 
           {challengeState === "searching" && cameraReady && (
-            <div
-              style={{
-                position: "fixed",
-                zIndex: 5,
-                bottom: 30,
-                left: "50%",
-                transform: "translateX(-50%)",
-                color: "white",
-                background: "rgba(0,0,0,0.72)",
-                padding: "12px 18px",
-                borderRadius: 999,
-                fontWeight: 700,
-                whiteSpace: "nowrap",
-              }}
-            >
-              Busca el ángulo objetivo
+            <div style={bottomPillStyle}>
+              {controlMode === "manual"
+                ? "Usa los controles para llegar al objetivo"
+                : "Busca el ángulo objetivo"}
             </div>
           )}
         </>
@@ -723,3 +817,27 @@ export default function CompatibleARDemo() {
     </main>
   );
 }
+
+const manualButtonStyle: React.CSSProperties = {
+  padding: "14px 12px",
+  borderRadius: 16,
+  border: "none",
+  background: "rgba(255,255,255,0.92)",
+  color: "#111",
+  fontWeight: 900,
+  fontSize: 15,
+};
+
+const bottomPillStyle: React.CSSProperties = {
+  position: "fixed",
+  zIndex: 5,
+  bottom: 30,
+  left: "50%",
+  transform: "translateX(-50%)",
+  color: "white",
+  background: "rgba(0,0,0,0.72)",
+  padding: "12px 18px",
+  borderRadius: 999,
+  fontWeight: 800,
+  whiteSpace: "nowrap",
+};
