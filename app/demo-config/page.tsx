@@ -1,79 +1,62 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 type DemoConfig = {
   prizeName: string;
-  prizeLatitude: number;
-  prizeLongitude: number;
-  activationRadiusMeters: number;
-  useDemoLocation: boolean;
-  demoUserLatitude: number;
-  demoUserLongitude: number;
-};
-
-type LatLng = {
   latitude: number;
   longitude: number;
+  activationRadiusMeters: number;
+  demoLocal: boolean;
 };
 
-type GoogleMapStatus = "idle" | "loading" | "ready" | "error";
+type UserLocation = {
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+};
 
-const CONFIG_STORAGE_KEY = "baseballRewardsDemoConfig";
-const DEMO_ROUTE = "/compatible-ar";
+const CONFIG_STORAGE_KEY = "baseballArDemoConfig";
 
-const DEFAULT_CONFIG: DemoConfig = {
+const defaultConfig: DemoConfig = {
   prizeName: "Premio Baseball Rewards",
-  prizeLatitude: 19.1738,
-  prizeLongitude: -96.1342,
+  latitude: 19.1738,
+  longitude: -96.1342,
   activationRadiusMeters: 60,
-  useDemoLocation: true,
-  demoUserLatitude: 19.17372,
-  demoUserLongitude: -96.13412,
+  demoLocal: true,
 };
 
-declare global {
-  interface Window {
-    google?: any;
-    initBaseballRewardsMap?: () => void;
-  }
-}
-
-function readConfig() {
-  if (typeof window === "undefined") return DEFAULT_CONFIG;
+function loadConfig(): DemoConfig {
+  if (typeof window === "undefined") return defaultConfig;
 
   try {
     const rawConfig = window.localStorage.getItem(CONFIG_STORAGE_KEY);
-    if (!rawConfig) return DEFAULT_CONFIG;
+    if (!rawConfig) return defaultConfig;
 
-    const parsedConfig = JSON.parse(rawConfig) as Partial<DemoConfig>;
+    const parsed = JSON.parse(rawConfig) as Partial<DemoConfig>;
 
     return {
-      ...DEFAULT_CONFIG,
-      ...parsedConfig,
-      prizeLatitude: Number(
-        parsedConfig.prizeLatitude ?? DEFAULT_CONFIG.prizeLatitude
-      ),
-      prizeLongitude: Number(
-        parsedConfig.prizeLongitude ?? DEFAULT_CONFIG.prizeLongitude
-      ),
-      activationRadiusMeters: Number(
-        parsedConfig.activationRadiusMeters ??
-          DEFAULT_CONFIG.activationRadiusMeters
-      ),
-      demoUserLatitude: Number(
-        parsedConfig.demoUserLatitude ?? DEFAULT_CONFIG.demoUserLatitude
-      ),
-      demoUserLongitude: Number(
-        parsedConfig.demoUserLongitude ?? DEFAULT_CONFIG.demoUserLongitude
-      ),
-      useDemoLocation: Boolean(
-        parsedConfig.useDemoLocation ?? DEFAULT_CONFIG.useDemoLocation
-      ),
+      prizeName: parsed.prizeName || defaultConfig.prizeName,
+      latitude:
+        typeof parsed.latitude === "number"
+          ? parsed.latitude
+          : defaultConfig.latitude,
+      longitude:
+        typeof parsed.longitude === "number"
+          ? parsed.longitude
+          : defaultConfig.longitude,
+      activationRadiusMeters:
+        typeof parsed.activationRadiusMeters === "number"
+          ? parsed.activationRadiusMeters
+          : defaultConfig.activationRadiusMeters,
+      demoLocal:
+        typeof parsed.demoLocal === "boolean"
+          ? parsed.demoLocal
+          : defaultConfig.demoLocal,
     };
-  } catch (error) {
-    console.error(error);
-    return DEFAULT_CONFIG;
+  } catch {
+    return defaultConfig;
   }
 }
 
@@ -81,24 +64,7 @@ function saveConfig(config: DemoConfig) {
   window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
 }
 
-function roundCoordinate(value: number) {
-  return Number(value.toFixed(7));
-}
-
-function getDemoUserNearPrize(latitude: number, longitude: number) {
-  const metersSouth = 10;
-  const metersEast = 8;
-  const latitudeOffset = metersSouth / 111_320;
-  const longitudeOffset =
-    metersEast / (111_320 * Math.cos((latitude * Math.PI) / 180));
-
-  return {
-    latitude: roundCoordinate(latitude - latitudeOffset),
-    longitude: roundCoordinate(longitude + longitudeOffset),
-  };
-}
-
-function getCurrentLocation(): Promise<LatLng> {
+function getCurrentLocation(): Promise<UserLocation> {
   return new Promise((resolve, reject) => {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       reject(new Error("Tu navegador no soporta geolocalización."));
@@ -110,420 +76,238 @@ function getCurrentLocation(): Promise<LatLng> {
         resolve({
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy ?? null,
         });
       },
       (error) => reject(error),
       {
         enableHighAccuracy: true,
         timeout: 12000,
-        maximumAge: 3000,
+        maximumAge: 2000,
       }
     );
-  });
-}
-
-function loadGoogleMapsScript() {
-  return new Promise<void>((resolve, reject) => {
-    if (typeof window === "undefined") {
-      reject(new Error("Google Maps solo puede cargar en navegador."));
-      return;
-    }
-
-    if (window.google?.maps) {
-      resolve();
-      return;
-    }
-
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-
-    if (!apiKey) {
-      reject(
-        new Error(
-          "Falta configurar NEXT_PUBLIC_GOOGLE_MAPS_API_KEY en Vercel."
-        )
-      );
-      return;
-    }
-
-    const existingScript = document.getElementById("google-maps-script");
-
-    if (existingScript) {
-      window.initBaseballRewardsMap = () => resolve();
-      return;
-    }
-
-    window.initBaseballRewardsMap = () => resolve();
-
-    const script = document.createElement("script");
-    script.id = "google-maps-script";
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initBaseballRewardsMap`;
-    script.async = true;
-    script.defer = true;
-    script.onerror = () =>
-      reject(new Error("No se pudo cargar Google Maps. Revisa tu API Key."));
-
-    document.head.appendChild(script);
   });
 }
 
 export default function DemoConfigPage() {
-  const mapElementRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<any>(null);
+  const [config, setConfig] = useState<DemoConfig>(defaultConfig);
+  const [status, setStatus] = useState("");
+  const [loadingGps, setLoadingGps] = useState(false);
+  const [leafletReady, setLeafletReady] = useState(false);
+
+  const mapDivRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
   const circleRef = useRef<any>(null);
-  const geocoderRef = useRef<any>(null);
-
-  const [config, setConfig] = useState<DemoConfig>(DEFAULT_CONFIG);
-  const [mapStatus, setMapStatus] = useState<GoogleMapStatus>("idle");
-  const [message, setMessage] = useState("");
-  const [searchText, setSearchText] = useState("");
-  const [isLocating, setIsLocating] = useState(false);
+  const leafletRef = useRef<any>(null);
 
   useEffect(() => {
-    const storedConfig = readConfig();
-    setConfig(storedConfig);
+    const savedConfig = loadConfig();
+    setConfig(savedConfig);
   }, []);
 
   useEffect(() => {
-    let isMounted = true;
+    let cancelled = false;
 
-    async function bootMap() {
-      try {
-        setMapStatus("loading");
-        await loadGoogleMapsScript();
+    async function setupLeaflet() {
+      if (!mapDivRef.current || mapInstanceRef.current) return;
 
-        if (!isMounted || !mapElementRef.current || !window.google?.maps) {
-          return;
-        }
+      const existingCss = document.querySelector(
+        'link[data-leaflet-css="true"]'
+      );
 
-        const center = {
-          lat: config.prizeLatitude,
-          lng: config.prizeLongitude,
-        };
-
-        const map = new window.google.maps.Map(mapElementRef.current, {
-          center,
-          zoom: 18,
-          gestureHandling: "greedy",
-          clickableIcons: false,
-          mapTypeControl: false,
-          streetViewControl: false,
-          fullscreenControl: true,
-          zoomControl: true,
-        });
-
-        const marker = new window.google.maps.Marker({
-          position: center,
-          map,
-          draggable: true,
-          title: "Premio",
-          label: "🎁",
-        });
-
-        const circle = new window.google.maps.Circle({
-          strokeColor: "#ff9f1c",
-          strokeOpacity: 0.95,
-          strokeWeight: 2,
-          fillColor: "#ffdd55",
-          fillOpacity: 0.18,
-          map,
-          center,
-          radius: config.activationRadiusMeters,
-        });
-
-        geocoderRef.current = new window.google.maps.Geocoder();
-        mapRef.current = map;
-        markerRef.current = marker;
-        circleRef.current = circle;
-
-        map.addListener("click", (event: any) => {
-          if (!event.latLng) return;
-          setPrizeFromMapPoint(event.latLng.lat(), event.latLng.lng(), true);
-        });
-
-        marker.addListener("dragend", (event: any) => {
-          if (!event.latLng) return;
-          setPrizeFromMapPoint(event.latLng.lat(), event.latLng.lng(), true);
-        });
-
-        setMapStatus("ready");
-      } catch (error) {
-        console.error(error);
-        setMapStatus("error");
-        setMessage(
-          error instanceof Error
-            ? error.message
-            : "No se pudo cargar Google Maps."
-        );
+      if (!existingCss) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+        link.integrity =
+          "sha256-p4NxAoJBhIINfQF1pJqrRrg22nE3veN4mM9RZTgZhn4=";
+        link.crossOrigin = "";
+        link.setAttribute("data-leaflet-css", "true");
+        document.head.appendChild(link);
       }
+
+      const L = await import("leaflet");
+      if (cancelled || !mapDivRef.current) return;
+
+      leafletRef.current = L;
+
+      const initialConfig = loadConfig();
+      const initialLatLng: [number, number] = [
+        initialConfig.latitude,
+        initialConfig.longitude,
+      ];
+
+      const map = L.map(mapDivRef.current, {
+        center: initialLatLng,
+        zoom: 17,
+        zoomControl: true,
+      });
+
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      }).addTo(map);
+
+      const prizeIcon = L.divIcon({
+        className: "",
+        html: `<div style="width:42px;height:42px;border-radius:999px;background:linear-gradient(135deg,#ffdd55,#ff7a00);display:flex;align-items:center;justify-content:center;font-size:23px;box-shadow:0 10px 24px rgba(0,0,0,.35);border:2px solid white;">🎁</div>`,
+        iconSize: [42, 42],
+        iconAnchor: [21, 21],
+      });
+
+      const marker = L.marker(initialLatLng, {
+        draggable: true,
+        icon: prizeIcon,
+      }).addTo(map);
+
+      const circle = L.circle(initialLatLng, {
+        radius: initialConfig.activationRadiusMeters,
+        color: "#ff9f1c",
+        weight: 2,
+        fillColor: "#ffdd55",
+        fillOpacity: 0.16,
+      }).addTo(map);
+
+      marker.on("dragend", () => {
+        const position = marker.getLatLng();
+        setPrizePosition(position.lat, position.lng, false);
+      });
+
+      map.on("click", (event: any) => {
+        setPrizePosition(event.latlng.lat, event.latlng.lng, false);
+      });
+
+      mapInstanceRef.current = map;
+      markerRef.current = marker;
+      circleRef.current = circle;
+
+      setLeafletReady(true);
+
+      setTimeout(() => {
+        map.invalidateSize();
+      }, 250);
     }
 
-    bootMap();
+    setupLeaflet();
 
     return () => {
-      isMounted = false;
+      cancelled = true;
     };
   }, []);
 
   useEffect(() => {
-    updateMapVisuals(config, false);
-  }, [config.activationRadiusMeters]);
+    updateMapLayers(config.latitude, config.longitude, config.activationRadiusMeters);
+  }, [config.latitude, config.longitude, config.activationRadiusMeters]);
 
-  function updateMapVisuals(nextConfig: DemoConfig, recenter: boolean) {
-    const position = {
-      lat: nextConfig.prizeLatitude,
-      lng: nextConfig.prizeLongitude,
-    };
+  function updateMapLayers(latitude: number, longitude: number, radius: number) {
+    if (!markerRef.current || !circleRef.current) return;
 
-    if (markerRef.current) {
-      markerRef.current.setPosition(position);
-    }
-
-    if (circleRef.current) {
-      circleRef.current.setCenter(position);
-      circleRef.current.setRadius(Number(nextConfig.activationRadiusMeters));
-    }
-
-    if (mapRef.current && recenter) {
-      mapRef.current.panTo(position);
-    }
+    const latLng: [number, number] = [latitude, longitude];
+    markerRef.current.setLatLng(latLng);
+    circleRef.current.setLatLng(latLng);
+    circleRef.current.setRadius(radius);
   }
 
-  function persistConfig(nextConfig: DemoConfig, nextMessage: string) {
-    setConfig(nextConfig);
-    saveConfig(nextConfig);
-    updateMapVisuals(nextConfig, true);
-    setMessage(nextMessage);
-  }
-
-  function setPrizeFromMapPoint(
+  function setPrizePosition(
     latitude: number,
     longitude: number,
-    shouldUpdateDemoUser: boolean
+    shouldCenterMap: boolean
   ) {
-    const cleanLatitude = roundCoordinate(latitude);
-    const cleanLongitude = roundCoordinate(longitude);
-    const nextDemoUser = getDemoUserNearPrize(cleanLatitude, cleanLongitude);
+    setConfig((current) => {
+      const nextConfig = {
+        ...current,
+        latitude,
+        longitude,
+      };
 
-    const nextConfig: DemoConfig = {
-      ...config,
-      prizeLatitude: cleanLatitude,
-      prizeLongitude: cleanLongitude,
-      demoUserLatitude: shouldUpdateDemoUser
-        ? nextDemoUser.latitude
-        : config.demoUserLatitude,
-      demoUserLongitude: shouldUpdateDemoUser
-        ? nextDemoUser.longitude
-        : config.demoUserLongitude,
-    };
+      saveConfig(nextConfig);
+      return nextConfig;
+    });
 
-    persistConfig(
-      nextConfig,
-      shouldUpdateDemoUser
-        ? "Premio colocado en el punto seleccionado. Demo local ajustada cerca del premio."
-        : "Premio colocado en el punto seleccionado."
-    );
-  }
+    updateMapLayers(latitude, longitude, config.activationRadiusMeters);
 
-  function handleConfigPatch(patch: Partial<DemoConfig>, nextMessage?: string) {
-    const nextConfig = {
-      ...config,
-      ...patch,
-      activationRadiusMeters: Number(
-        patch.activationRadiusMeters ?? config.activationRadiusMeters
-      ),
-      prizeLatitude: Number(patch.prizeLatitude ?? config.prizeLatitude),
-      prizeLongitude: Number(patch.prizeLongitude ?? config.prizeLongitude),
-      demoUserLatitude: Number(
-        patch.demoUserLatitude ?? config.demoUserLatitude
-      ),
-      demoUserLongitude: Number(
-        patch.demoUserLongitude ?? config.demoUserLongitude
-      ),
-    };
-
-    persistConfig(nextConfig, nextMessage ?? "Configuración guardada.");
-  }
-
-  async function setPrizeToCurrentGps() {
-    setIsLocating(true);
-    setMessage("Obteniendo tu ubicación GPS...");
-
-    try {
-      const currentLocation = await getCurrentLocation();
-      setPrizeFromMapPoint(
-        currentLocation.latitude,
-        currentLocation.longitude,
-        true
-      );
-      setMessage("Premio colocado en tu ubicación GPS actual.");
-    } catch (error) {
-      console.error(error);
-      setMessage("No pude obtener tu ubicación. Revisa permisos de ubicación.");
-    } finally {
-      setIsLocating(false);
+    if (shouldCenterMap && mapInstanceRef.current) {
+      mapInstanceRef.current.setView([latitude, longitude], 18);
     }
+
+    setStatus("Ubicación del premio actualizada. Guarda o inicia la demo.");
   }
 
-  async function setDemoUserToCurrentGps() {
-    setIsLocating(true);
-    setMessage("Obteniendo tu ubicación GPS...");
+  function updateField<K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) {
+    setConfig((current) => {
+      const nextConfig = {
+        ...current,
+        [key]: value,
+      };
+
+      saveConfig(nextConfig);
+      return nextConfig;
+    });
+
+    setStatus("Configuración actualizada.");
+  }
+
+  async function useMyGpsAsPrize() {
+    setLoadingGps(true);
+    setStatus("Obteniendo tu ubicación...");
 
     try {
-      const currentLocation = await getCurrentLocation();
-      handleConfigPatch(
-        {
-          demoUserLatitude: roundCoordinate(currentLocation.latitude),
-          demoUserLongitude: roundCoordinate(currentLocation.longitude),
-        },
-        "Ubicación demo local actualizada con tu GPS actual."
+      const location = await getCurrentLocation();
+      setPrizePosition(location.latitude, location.longitude, true);
+      setStatus(
+        `Premio colocado en tu GPS actual. Precisión: ±${Math.round(
+          location.accuracy ?? 0
+        )} m.`
       );
     } catch (error) {
       console.error(error);
-      setMessage("No pude obtener tu ubicación. Revisa permisos de ubicación.");
+      setStatus(
+        "No pudimos obtener tu GPS. Revisa permisos de ubicación y prueba desde HTTPS/Vercel."
+      );
     } finally {
-      setIsLocating(false);
+      setLoadingGps(false);
     }
   }
 
-  function saveManualCoordinates() {
-    setPrizeFromMapPoint(config.prizeLatitude, config.prizeLongitude, true);
+  function saveCurrentConfig() {
+    saveConfig(config);
+    setStatus("Configuración guardada correctamente.");
   }
-
-  function resetConfig() {
-    persistConfig(DEFAULT_CONFIG, "Configuración restablecida.");
-  }
-
-  function centerPrize() {
-    updateMapVisuals(config, true);
-    setMessage("Mapa centrado en el premio.");
-  }
-
-  function searchPlace() {
-    if (!searchText.trim()) {
-      setMessage("Escribe una dirección o lugar para buscar.");
-      return;
-    }
-
-    if (!geocoderRef.current) {
-      setMessage("Google Maps todavía no está listo.");
-      return;
-    }
-
-    setMessage("Buscando ubicación...");
-
-    geocoderRef.current.geocode(
-      { address: searchText },
-      (results: any[], status: string) => {
-        if (status !== "OK" || !results?.[0]?.geometry?.location) {
-          setMessage("No encontré esa ubicación. Intenta con más detalle.");
-          return;
-        }
-
-        const location = results[0].geometry.location;
-        setPrizeFromMapPoint(location.lat(), location.lng(), true);
-        setMessage("Premio colocado en la ubicación buscada.");
-      }
-    );
-  }
-
-  const demoModeLabel = config.useDemoLocation
-    ? "Demo local prendida"
-    : "GPS real prendido";
 
   return (
     <main style={pageStyle}>
       <section style={cardStyle}>
-        <div style={headerStyle}>
+        <div style={headerRowStyle}>
           <div>
-            <p style={eyebrowStyle}>Baseball Rewards</p>
-            <h1 style={titleStyle}>Configurar demo AR</h1>
+            <p style={eyebrowStyle}>Baseball Rewards AR</p>
+            <h1 style={{ margin: 0 }}>Configuración de demo</h1>
           </div>
 
-          <a href={DEMO_ROUTE} style={demoLinkStyle}>
-            Iniciar demo
-          </a>
+          <Link href="/compatible-ar" style={smallLinkStyle}>
+            Volver
+          </Link>
         </div>
 
-        <div style={modeCardStyle}>
-          <div>
-            <strong>{demoModeLabel}</strong>
-            <p style={smallTextStyle}>
-              {config.useDemoLocation
-                ? "La demo simula al usuario cerca del premio para probar sin caminar."
-                : "La demo usa el GPS real del celular. Debes estar dentro del radio."}
-            </p>
-          </div>
-
-          <button
-            onClick={() =>
-              handleConfigPatch(
-                { useDemoLocation: !config.useDemoLocation },
-                !config.useDemoLocation
-                  ? "Demo local prendida."
-                  : "GPS real prendido."
-              )
-            }
-            style={{
-              ...toggleButtonStyle,
-              background: config.useDemoLocation ? "#35f28f" : "#ffcf4a",
-            }}
-          >
-            {config.useDemoLocation ? "Demo local ON" : "GPS real ON"}
-          </button>
-        </div>
-
-        <div style={searchRowStyle}>
-          <input
-            value={searchText}
-            onChange={(event) => setSearchText(event.target.value)}
-            placeholder="Buscar dirección, estadio, negocio o punto"
-            style={searchInputStyle}
-          />
-          <button onClick={searchPlace} style={searchButtonStyle}>
-            Buscar
-          </button>
-        </div>
-
-        <div style={mapWrapperStyle}>
-          <div style={mapToolbarStyle}>
-            <button onClick={centerPrize} style={toolbarButtonStyle}>
-              Centrar premio
-            </button>
-            <button onClick={setPrizeToCurrentGps} style={toolbarButtonStyle}>
-              {isLocating ? "Ubicando..." : "Usar mi GPS como premio"}
-            </button>
-          </div>
-
-          <div ref={mapElementRef} style={mapStyle} />
-
-          {mapStatus === "loading" && (
-            <div style={mapOverlayStyle}>Cargando Google Maps...</div>
-          )}
-
-          {mapStatus === "error" && (
-            <div style={mapOverlayStyle}>
-              <strong>No se pudo cargar Google Maps</strong>
-              <span style={{ marginTop: 8, opacity: 0.8 }}>
-                Configura NEXT_PUBLIC_GOOGLE_MAPS_API_KEY en Vercel.
-              </span>
-            </div>
-          )}
-        </div>
-
-        <p style={hintStyle}>
-          Toca el mapa o arrastra el marcador 🎁 para colocar el premio. Esto ya no usa tu ubicación, salvo que pulses “Usar mi GPS como premio”.
+        <p style={descriptionStyle}>
+          Toca el mapa o arrastra el marcador para colocar el premio. La demo AR
+          leerá esta configuración sin tocar código.
         </p>
+
+        <div style={mapShellStyle}>
+          {!leafletReady && (
+            <div style={mapLoadingStyle}>Cargando mapa OpenStreetMap...</div>
+          )}
+          <div ref={mapDivRef} style={mapStyle} />
+        </div>
 
         <div style={formGridStyle}>
           <label style={labelStyle}>
             Nombre del premio
             <input
               value={config.prizeName}
-              onChange={(event) =>
-                setConfig({ ...config, prizeName: event.target.value })
-              }
-              onBlur={() => handleConfigPatch({ prizeName: config.prizeName })}
+              onChange={(event) => updateField("prizeName", event.target.value)}
               style={inputStyle}
             />
           </label>
@@ -532,98 +316,82 @@ export default function DemoConfigPage() {
             Radio de activación en metros
             <input
               type="number"
+              min={5}
               value={config.activationRadiusMeters}
               onChange={(event) =>
-                setConfig({
-                  ...config,
-                  activationRadiusMeters: Number(event.target.value),
-                })
-              }
-              onBlur={() =>
-                handleConfigPatch({
-                  activationRadiusMeters: config.activationRadiusMeters,
-                })
+                updateField(
+                  "activationRadiusMeters",
+                  Math.max(5, Number(event.target.value) || 5)
+                )
               }
               style={inputStyle}
             />
           </label>
 
           <label style={labelStyle}>
-            Latitud premio
+            Latitud
             <input
               type="number"
-              value={config.prizeLatitude}
+              value={config.latitude}
               onChange={(event) =>
-                setConfig({
-                  ...config,
-                  prizeLatitude: Number(event.target.value),
-                })
+                updateField("latitude", Number(event.target.value))
               }
               style={inputStyle}
             />
           </label>
 
           <label style={labelStyle}>
-            Longitud premio
+            Longitud
             <input
               type="number"
-              value={config.prizeLongitude}
+              value={config.longitude}
               onChange={(event) =>
-                setConfig({
-                  ...config,
-                  prizeLongitude: Number(event.target.value),
-                })
-              }
-              style={inputStyle}
-            />
-          </label>
-
-          <label style={labelStyle}>
-            Latitud demo local
-            <input
-              type="number"
-              value={config.demoUserLatitude}
-              onChange={(event) =>
-                setConfig({
-                  ...config,
-                  demoUserLatitude: Number(event.target.value),
-                })
-              }
-              style={inputStyle}
-            />
-          </label>
-
-          <label style={labelStyle}>
-            Longitud demo local
-            <input
-              type="number"
-              value={config.demoUserLongitude}
-              onChange={(event) =>
-                setConfig({
-                  ...config,
-                  demoUserLongitude: Number(event.target.value),
-                })
+                updateField("longitude", Number(event.target.value))
               }
               style={inputStyle}
             />
           </label>
         </div>
 
-        <div style={buttonGridStyle}>
-          <button onClick={saveManualCoordinates} style={saveButtonStyle}>
-            Guardar coordenadas del premio
+        <button
+          onClick={() => updateField("demoLocal", !config.demoLocal)}
+          style={{
+            ...toggleButtonStyle,
+            background: config.demoLocal
+              ? "linear-gradient(135deg,#2cff8f,#16c784)"
+              : "rgba(255,255,255,0.10)",
+            color: config.demoLocal ? "#07140d" : "white",
+          }}
+        >
+          {config.demoLocal
+            ? "Demo local: ACTIVADA"
+            : "Demo local: DESACTIVADA / GPS real"}
+        </button>
+
+        <p style={helperTextStyle}>
+          Demo local simula que el usuario está cerca del premio. GPS real usa la
+          ubicación real del celular.
+        </p>
+
+        <div style={actionsGridStyle}>
+          <button
+            onClick={useMyGpsAsPrize}
+            style={secondaryButtonStyle}
+            disabled={loadingGps}
+          >
+            {loadingGps ? "Obteniendo GPS..." : "Usar mi GPS como premio"}
           </button>
 
-          <button onClick={setDemoUserToCurrentGps} style={actionButtonStyle}>
-            Usar mi GPS como ubicación demo
-          </button>
-
-          <button onClick={resetConfig} style={dangerButtonStyle}>
-            Reset demo
+          <button onClick={saveCurrentConfig} style={secondaryButtonStyle}>
+            Guardar configuración
           </button>
         </div>
 
-        {message && <p style={messageStyle}>{message}</p>}
+        <Link href="/compatible-ar" style={primaryLinkStyle}>
+          Iniciar demo AR
+        </Link>
+
+        {status && <p style={statusStyle}>{status}</p>}
       </section>
     </main>
   );
@@ -631,92 +399,87 @@ export default function DemoConfigPage() {
 
 const pageStyle: CSSProperties = {
   minHeight: "100vh",
-  padding: 16,
-  color: "white",
   background:
-    "radial-gradient(circle at top, rgba(255,210,74,0.22), transparent 35%), #050505",
+    "radial-gradient(circle at top, rgba(255,210,74,0.18), transparent 32%), #050505",
+  color: "white",
+  padding: 18,
 };
 
 const cardStyle: CSSProperties = {
   width: "100%",
-  maxWidth: 920,
+  maxWidth: 760,
   margin: "0 auto",
   background: "rgba(255,255,255,0.08)",
   border: "1px solid rgba(255,255,255,0.12)",
   borderRadius: 26,
   padding: 18,
   boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
+  backdropFilter: "blur(10px)",
 };
 
-const headerStyle: CSSProperties = {
+const headerRowStyle: CSSProperties = {
   display: "flex",
-  alignItems: "center",
   justifyContent: "space-between",
+  alignItems: "center",
   gap: 14,
-  marginBottom: 16,
 };
 
 const eyebrowStyle: CSSProperties = {
-  margin: 0,
+  margin: "0 0 4px",
+  color: "#ffdd55",
   fontSize: 12,
-  opacity: 0.66,
-  fontWeight: 800,
+  fontWeight: 900,
   textTransform: "uppercase",
   letterSpacing: 1,
 };
 
-const titleStyle: CSSProperties = {
-  margin: "4px 0 0",
-  fontSize: 28,
+const descriptionStyle: CSSProperties = {
+  margin: "12px 0 16px",
+  opacity: 0.82,
+  lineHeight: 1.45,
 };
 
-const demoLinkStyle: CSSProperties = {
-  color: "#111",
-  textDecoration: "none",
-  background:
-    "linear-gradient(135deg, #ffdd55 0%, #ffb02e 45%, #ff7a00 100%)",
-  borderRadius: 999,
-  padding: "12px 16px",
-  fontWeight: 950,
-  whiteSpace: "nowrap",
+const mapShellStyle: CSSProperties = {
+  position: "relative",
+  height: 430,
+  borderRadius: 22,
+  overflow: "hidden",
+  border: "1px solid rgba(255,255,255,0.16)",
+  background: "rgba(0,0,0,0.35)",
 };
 
-const modeCardStyle: CSSProperties = {
+const mapStyle: CSSProperties = {
+  width: "100%",
+  height: "100%",
+};
+
+const mapLoadingStyle: CSSProperties = {
+  position: "absolute",
+  inset: 0,
   display: "flex",
+  justifyContent: "center",
   alignItems: "center",
-  justifyContent: "space-between",
-  gap: 14,
-  background: "rgba(0,0,0,0.32)",
-  border: "1px solid rgba(255,255,255,0.10)",
-  borderRadius: 18,
-  padding: 14,
-  marginBottom: 14,
+  zIndex: 2,
+  background: "rgba(0,0,0,0.65)",
+  fontWeight: 800,
 };
 
-const smallTextStyle: CSSProperties = {
-  margin: "6px 0 0",
-  opacity: 0.72,
-  fontSize: 13,
-  lineHeight: 1.35,
-};
-
-const toggleButtonStyle: CSSProperties = {
-  border: "none",
-  borderRadius: 999,
-  color: "#111",
-  fontWeight: 950,
-  padding: "12px 14px",
-  minWidth: 128,
-};
-
-const searchRowStyle: CSSProperties = {
+const formGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "1fr auto",
-  gap: 10,
-  marginBottom: 12,
+  gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+  gap: 12,
+  marginTop: 16,
 };
 
-const searchInputStyle: CSSProperties = {
+const labelStyle: CSSProperties = {
+  display: "grid",
+  gap: 6,
+  fontSize: 13,
+  fontWeight: 800,
+  color: "rgba(255,255,255,0.82)",
+};
+
+const inputStyle: CSSProperties = {
   width: "100%",
   padding: "13px 14px",
   borderRadius: 14,
@@ -727,135 +490,73 @@ const searchInputStyle: CSSProperties = {
   outline: "none",
 };
 
-const searchButtonStyle: CSSProperties = {
-  border: "none",
-  borderRadius: 14,
-  padding: "13px 16px",
-  fontWeight: 900,
-  background: "rgba(255,255,255,0.92)",
-  color: "#111",
-};
-
-const mapWrapperStyle: CSSProperties = {
-  position: "relative",
-  overflow: "hidden",
-  borderRadius: 22,
-  border: "1px solid rgba(255,255,255,0.14)",
-  background: "#111",
-  height: 520,
-};
-
-const mapStyle: CSSProperties = {
+const toggleButtonStyle: CSSProperties = {
   width: "100%",
-  height: "100%",
-};
-
-const mapToolbarStyle: CSSProperties = {
-  position: "absolute",
-  top: 12,
-  left: 12,
-  right: 12,
-  zIndex: 2,
-  display: "flex",
-  gap: 8,
-  flexWrap: "wrap",
-};
-
-const toolbarButtonStyle: CSSProperties = {
-  border: "none",
+  marginTop: 16,
+  padding: "14px 16px",
   borderRadius: 999,
-  padding: "10px 13px",
-  background: "rgba(0,0,0,0.72)",
-  color: "white",
-  fontWeight: 850,
-  backdropFilter: "blur(8px)",
+  border: "none",
+  fontWeight: 950,
+  fontSize: 15,
 };
 
-const mapOverlayStyle: CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  zIndex: 4,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flexDirection: "column",
+const helperTextStyle: CSSProperties = {
+  margin: "8px 0 0",
+  fontSize: 12,
+  opacity: 0.68,
   textAlign: "center",
-  padding: 22,
-  background: "rgba(0,0,0,0.72)",
 };
 
-const hintStyle: CSSProperties = {
-  margin: "12px 2px 16px",
-  opacity: 0.76,
-  fontSize: 13,
-  lineHeight: 1.35,
-};
-
-const formGridStyle: CSSProperties = {
+const actionsGridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
   gap: 12,
+  marginTop: 16,
 };
 
-const labelStyle: CSSProperties = {
-  display: "grid",
-  gap: 7,
-  fontSize: 13,
-  fontWeight: 800,
-  opacity: 0.92,
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  padding: "12px 13px",
-  borderRadius: 14,
-  border: "1px solid rgba(255,255,255,0.16)",
-  background: "rgba(0,0,0,0.35)",
-  color: "white",
-  fontSize: 15,
-  outline: "none",
-};
-
-const buttonGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
-  gap: 10,
-  marginTop: 14,
-};
-
-const saveButtonStyle: CSSProperties = {
-  border: "none",
-  borderRadius: 16,
+const secondaryButtonStyle: CSSProperties = {
   padding: "14px 16px",
-  fontWeight: 950,
+  borderRadius: 16,
+  border: "1px solid rgba(255,255,255,0.16)",
+  color: "white",
+  background: "rgba(255,255,255,0.10)",
+  fontWeight: 900,
+  fontSize: 14,
+};
+
+const primaryLinkStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "center",
+  alignItems: "center",
+  marginTop: 16,
+  padding: "16px 22px",
+  borderRadius: 999,
+  border: "none",
   color: "#111",
+  textDecoration: "none",
+  fontWeight: 950,
+  fontSize: 16,
   background:
     "linear-gradient(135deg, #ffdd55 0%, #ffb02e 45%, #ff7a00 100%)",
+  boxShadow: "0 12px 28px rgba(255, 157, 0, 0.35)",
 };
 
-const actionButtonStyle: CSSProperties = {
-  border: "none",
-  borderRadius: 16,
-  padding: "14px 16px",
-  fontWeight: 900,
-  color: "#111",
-  background: "rgba(255,255,255,0.92)",
+const smallLinkStyle: CSSProperties = {
+  color: "white",
+  textDecoration: "none",
+  background: "rgba(255,255,255,0.10)",
+  padding: "10px 14px",
+  borderRadius: 999,
+  fontWeight: 850,
+  whiteSpace: "nowrap",
 };
 
-const dangerButtonStyle: CSSProperties = {
-  border: "1px solid rgba(255,120,120,0.55)",
-  borderRadius: 16,
-  padding: "14px 16px",
-  fontWeight: 900,
-  color: "#ffb4b4",
-  background: "rgba(255,80,80,0.12)",
-};
-
-const messageStyle: CSSProperties = {
+const statusStyle: CSSProperties = {
   margin: "14px 0 0",
   padding: 12,
   borderRadius: 14,
-  background: "rgba(0,0,0,0.34)",
-  border: "1px solid rgba(255,255,255,0.10)",
-  color: "#fff4c7",
+  background: "rgba(0,0,0,0.35)",
+  color: "#ffdd55",
+  fontWeight: 800,
+  textAlign: "center",
 };
