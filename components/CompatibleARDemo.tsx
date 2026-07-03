@@ -11,6 +11,7 @@ import {
   useState,
   type CSSProperties,
   type TouchEvent,
+  type PointerEvent,
 } from "react";
 
 type OrientationState = {
@@ -71,8 +72,8 @@ type UserLocation = {
 
 const CONFIG_STORAGE_KEY = "baseballArDemoConfig";
 const COLLECTION_SCALE = 3.75;
-const FOCUS_HOLD_MS = 850;
-const FOCUS_TARGET_RADIUS = 9;
+const FOCUS_HOLD_MS = 650;
+const FOCUS_TARGET_RADIUS = 11;
 
 const focusTargets: FocusPosition[] = [
   { x: 28, y: 36 },
@@ -451,6 +452,8 @@ export default function CompatibleARDemo() {
   const locationWatchIdRef = useRef<number | null>(null);
   const previewLocationWatchIdRef = useRef<number | null>(null);
   const focusHoldStartRef = useRef<number | null>(null);
+  const focusLayerRef = useRef<HTMLDivElement | null>(null);
+  const focusDraggingRef = useRef(false);
 
   const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
   const lastPinchDistanceRef = useRef<number | null>(null);
@@ -510,8 +513,10 @@ export default function CompatibleARDemo() {
       }
     : { x: 50, y: 50 };
 
+  // En el reto de enfoque movemos la mira con el dedo para que sea suave y no dependa de la brújula.
+  // Los sensores siguen ayudando en la fase de dirección, pero el enfoque no se atora si H se queda en 0.
   const focusPosition =
-    controlMode === "manual" ? manualFocusPosition : sensorFocusPosition;
+    challengeState === "focusChallenge" ? manualFocusPosition : sensorFocusPosition;
 
   const focusDistance = Math.sqrt(
     Math.pow(focusPosition.x - currentFocusTarget.x, 2) +
@@ -832,7 +837,7 @@ export default function CompatibleARDemo() {
       setControlMode("sensor");
       setFocusIndex(0);
       setFocusProgress(0);
-      setManualFocusPosition({ x: 50, y: 50 });
+      setManualFocusPosition({ x: 50, y: 78 });
       setFocusBaseline({
         horizontal: currentHorizontal,
         vertical: currentVertical,
@@ -1087,8 +1092,49 @@ export default function CompatibleARDemo() {
   function moveFocusManual(xDelta: number, yDelta: number) {
     setManualFocusPosition((current) => ({
       x: clamp(current.x + xDelta, 8, 92),
-      y: clamp(current.y + yDelta, 16, 84),
+      y: clamp(current.y + yDelta, 22, 86),
     }));
+  }
+
+  function updateFocusPositionFromPointer(clientX: number, clientY: number) {
+    const layer = focusLayerRef.current;
+
+    if (!layer) return;
+
+    const rect = layer.getBoundingClientRect();
+    const nextX = ((clientX - rect.left) / rect.width) * 100;
+    const nextY = ((clientY - rect.top) / rect.height) * 100;
+
+    setManualFocusPosition({
+      x: clamp(nextX, 8, 92),
+      y: clamp(nextY, 22, 86),
+    });
+  }
+
+  function handleFocusPointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (challengeState !== "focusChallenge" || showBall) return;
+
+    event.preventDefault();
+    focusDraggingRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateFocusPositionFromPointer(event.clientX, event.clientY);
+  }
+
+  function handleFocusPointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (!focusDraggingRef.current) return;
+
+    event.preventDefault();
+    updateFocusPositionFromPointer(event.clientX, event.clientY);
+  }
+
+  function handleFocusPointerUp(event: PointerEvent<HTMLDivElement>) {
+    focusDraggingRef.current = false;
+
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // El navegador puede liberar el pointer capture automáticamente.
+    }
   }
 
   function handleBallTouchStart(event: TouchEvent<HTMLDivElement>) {
@@ -1449,11 +1495,18 @@ export default function CompatibleARDemo() {
           )}
 
           {challengeState === "focusChallenge" && cameraReady && !showBall && (
-            <div style={focusLayerStyle}>
+            <div
+              ref={focusLayerRef}
+              onPointerDown={handleFocusPointerDown}
+              onPointerMove={handleFocusPointerMove}
+              onPointerUp={handleFocusPointerUp}
+              onPointerCancel={handleFocusPointerUp}
+              style={focusLayerStyle}
+            >
               <div style={focusHeaderStyle}>
                 <strong>{getInstructionMessage()}</strong>
                 <span>
-                  Centra la mira sobre cada señal para cargar el escaneo.
+                  Arrastra la mira con el dedo y céntrala sobre cada señal.
                 </span>
 
                 <div style={focusProgressContainerStyle}>
@@ -1669,7 +1722,7 @@ export default function CompatibleARDemo() {
           )}
 
           {challengeState === "focusChallenge" && cameraReady && !showBall && (
-            <div style={bottomPillStyle}>Completa el escaneo de enfoque</div>
+            <div style={bottomPillStyle}>Arrastra la mira hacia las señales</div>
           )}
 
           {challengeState === "found" && cameraReady && (
@@ -1790,7 +1843,9 @@ const focusLayerStyle: CSSProperties = {
   position: "fixed",
   inset: 0,
   zIndex: 4,
-  pointerEvents: "none",
+  pointerEvents: "auto",
+  touchAction: "none",
+  userSelect: "none",
 };
 
 const focusHeaderStyle: CSSProperties = {
@@ -1854,7 +1909,7 @@ const focusReticleStyle: CSSProperties = {
   display: "flex",
   justifyContent: "center",
   alignItems: "center",
-  transition: "left 80ms linear, top 80ms linear, border-color 120ms ease",
+  transition: "border-color 120ms ease, box-shadow 120ms ease",
 };
 
 const focusReticleDotStyle: CSSProperties = {
