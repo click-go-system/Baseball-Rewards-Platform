@@ -10,6 +10,11 @@ type OrientationState = {
   gamma: number;
 };
 
+type TargetState = {
+  alpha: number;
+  beta: number;
+};
+
 function normalizeAngle(angle: number) {
   return ((angle % 360) + 360) % 360;
 }
@@ -17,6 +22,10 @@ function normalizeAngle(angle: number) {
 function angleDifference(a: number, b: number) {
   const diff = Math.abs(normalizeAngle(a) - normalizeAngle(b));
   return Math.min(diff, 360 - diff);
+}
+
+function randomBetween(min: number, max: number) {
+  return Math.random() * (max - min) + min;
 }
 
 function BallModel({ visible }: { visible: boolean }) {
@@ -46,29 +55,67 @@ export default function CompatibleARDemo() {
     gamma: 0,
   });
 
-  /**
-   * Dirección virtual donde está escondido el premio.
-   * Puedes cambiar este número para mover el premio.
-   */
-  const targetDirection = 40;
+  const [target, setTarget] = useState<TargetState>({
+    alpha: 40,
+    beta: 60,
+  });
 
-  const currentDirection = normalizeAngle(orientation.alpha || 0);
-  const diff = angleDifference(currentDirection, targetDirection);
+  const currentAlpha = normalizeAngle(orientation.alpha || 0);
 
   /**
-   * Rango para que aparezca la pelota.
-   * Mientras más alto, más fácil encontrarla.
+   * beta normalmente se mueve cuando inclinas el teléfono arriba/abajo.
+   * En muchos celulares:
+   * - cerca de 90 = teléfono vertical/frente
+   * - menor = apuntando más hacia arriba/abajo dependiendo orientación
    */
-  const prizeDetectionRange = 80;
+  const currentBeta = orientation.beta || 0;
+
+  const alphaDiff = angleDifference(currentAlpha, target.alpha);
+  const betaDiff = Math.abs(currentBeta - target.beta);
 
   /**
-   * Rango para permitir capturar.
-   * Debe ser menor que prizeDetectionRange.
+   * Rango horizontal.
+   * Menor número = más difícil.
    */
-  const captureRange = 40;
+  const alphaDetectionRange = 45;
+  const alphaCaptureRange = 25;
 
-  const isLookingAtPrize = diff <= prizeDetectionRange;
-  const canCapturePrize = diff <= captureRange;
+  /**
+   * Rango vertical.
+   * Menor número = más difícil.
+   */
+  const betaDetectionRange = 25;
+  const betaCaptureRange = 14;
+
+  const isLookingAtPrize =
+    alphaDiff <= alphaDetectionRange && betaDiff <= betaDetectionRange;
+
+  const canCapturePrize =
+    alphaDiff <= alphaCaptureRange && betaDiff <= betaCaptureRange;
+
+  function generateNewTarget() {
+    /**
+     * Generamos una dirección aleatoria horizontal.
+     * 0 a 360 grados.
+     */
+    const randomAlpha = randomBetween(0, 360);
+
+    /**
+     * Generamos una inclinación vertical aleatoria.
+     * Ajusta estos valores si quieres que aparezca más arriba o más abajo.
+     *
+     * 35 a 105 suele ser buen rango para demo:
+     * - 35/50: hay que apuntar más arriba
+     * - 70/90: al frente
+     * - 95/105: más abajo
+     */
+    const randomBeta = randomBetween(35, 105);
+
+    setTarget({
+      alpha: randomAlpha,
+      beta: randomBeta,
+    });
+  }
 
   async function requestOrientationPermission() {
     try {
@@ -104,6 +151,7 @@ export default function CompatibleARDemo() {
 
       if (!orientationAllowed) return;
 
+      generateNewTarget();
       setStarted(true);
 
       const cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -164,6 +212,14 @@ export default function CompatibleARDemo() {
     setCameraReady(false);
   }
 
+  function resetDemo() {
+    stopCamera();
+    setCaptured(false);
+    setStarted(false);
+    setError("");
+    generateNewTarget();
+  }
+
   if (captured) {
     return (
       <main
@@ -183,11 +239,7 @@ export default function CompatibleARDemo() {
         <p>Ganaste tu recompensa Baseball Rewards.</p>
 
         <button
-          onClick={() => {
-            stopCamera();
-            setCaptured(false);
-            setStarted(false);
-          }}
+          onClick={resetDemo}
           style={{
             marginTop: 20,
             padding: "14px 24px",
@@ -230,7 +282,8 @@ export default function CompatibleARDemo() {
 
           <p style={{ maxWidth: 420 }}>
             Esta demo funciona en navegador usando cámara y movimiento del
-            celular. Mueve tu teléfono para encontrar el premio escondido.
+            celular. El premio aparecerá en una dirección aleatoria. Mueve tu
+            teléfono hacia los lados, arriba o abajo para encontrarlo.
           </p>
 
           <button
@@ -308,15 +361,21 @@ export default function CompatibleARDemo() {
                 ? "🎯 Premio centrado"
                 : isLookingAtPrize
                 ? "⚾ Premio cerca, alinéate un poco más"
-                : "🔎 Muévete para buscar el premio"}
+                : "🔎 Busca el premio moviendo el celular"}
             </strong>
 
             <p style={{ margin: "8px 0 0" }}>
-              Dirección actual: {Math.round(currentDirection)}°
+              Horizontal: {Math.round(alphaDiff)}° / Vertical:{" "}
+              {Math.round(betaDiff)}°
             </p>
 
-            <p style={{ margin: "4px 0 0" }}>
-              Diferencia: {Math.round(diff)}°
+            <p style={{ margin: "4px 0 0", opacity: 0.8 }}>
+              Mueve el celular a los lados, arriba o abajo.
+            </p>
+
+            <p style={{ margin: "4px 0 0", opacity: 0.55, fontSize: 12 }}>
+              Debug objetivo: H {Math.round(target.alpha)}° / V{" "}
+              {Math.round(target.beta)}°
             </p>
           </div>
 
@@ -324,7 +383,7 @@ export default function CompatibleARDemo() {
             <div
               style={{
                 position: "fixed",
-                top: 120,
+                top: 140,
                 left: 20,
                 right: 20,
                 zIndex: 6,
@@ -396,7 +455,7 @@ export default function CompatibleARDemo() {
                 fontWeight: 600,
               }}
             >
-              Sigue girando el celular
+              Sigue buscando
             </div>
           )}
         </>
