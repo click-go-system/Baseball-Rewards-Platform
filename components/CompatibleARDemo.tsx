@@ -295,7 +295,9 @@ export default function CompatibleARDemo() {
 
   const shouldUseGammaForHorizontal = !hasAlpha || alphaLooksFrozen;
 
-  const sensorHorizontal = normalizeAngle(orientation.alpha ?? 0);
+  const sensorHorizontal = shouldUseGammaForHorizontal
+    ? normalizeAngle((orientation.gamma ?? 0) + 180)
+    : normalizeAngle(orientation.alpha ?? 0);
 
   const sensorVertical = hasBeta ? orientation.beta ?? 0 : 70;
 
@@ -310,8 +312,8 @@ export default function CompatibleARDemo() {
   const horizontalDiff = angleDifference(currentHorizontal, target.horizontal);
   const verticalDiff = Math.abs(currentVertical - target.vertical);
 
-  const horizontalTargetRange = 60;
-  const verticalTargetRange = 35;
+  const horizontalTargetRange = 26;
+  const verticalTargetRange = 20;
 
   const isInsideTarget =
     horizontalDiff <= horizontalTargetRange &&
