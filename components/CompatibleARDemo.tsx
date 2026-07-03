@@ -38,17 +38,37 @@ export default function CompatibleARDemo() {
   const [started, setStarted] = useState(false);
   const [captured, setCaptured] = useState(false);
   const [error, setError] = useState("");
+  const [stream, setStream] = useState<MediaStream | null>(null);
+
   const [orientation, setOrientation] = useState<OrientationState>({
     alpha: 0,
     beta: 0,
     gamma: 0,
   });
 
+  /**
+   * Dirección virtual donde está escondido el premio.
+   * Puedes cambiar este número para mover el premio.
+   */
   const targetDirection = 40;
 
   const currentDirection = normalizeAngle(orientation.alpha || 0);
   const diff = angleDifference(currentDirection, targetDirection);
-  const isLookingAtPrize = diff <= 25;
+
+  /**
+   * Rango para que aparezca la pelota.
+   * Mientras más alto, más fácil encontrarla.
+   */
+  const prizeDetectionRange = 80;
+
+  /**
+   * Rango para permitir capturar.
+   * Debe ser menor que prizeDetectionRange.
+   */
+  const captureRange = 40;
+
+  const isLookingAtPrize = diff <= prizeDetectionRange;
+  const canCapturePrize = diff <= captureRange;
 
   async function requestOrientationPermission() {
     try {
@@ -84,26 +104,40 @@ export default function CompatibleARDemo() {
 
       if (!orientationAllowed) return;
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      setStarted(true);
+
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
         },
         audio: false,
       });
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-
-      setCameraReady(true);
-      setStarted(true);
+      setStream(cameraStream);
     } catch (err) {
       console.error(err);
       setError(
         "No se pudo abrir la cámara. Revisa permisos o abre desde HTTPS/Vercel."
       );
+      setStarted(false);
     }
   }
+
+  useEffect(() => {
+    if (!stream || !videoRef.current) return;
+
+    videoRef.current.srcObject = stream;
+
+    videoRef.current
+      .play()
+      .then(() => {
+        setCameraReady(true);
+      })
+      .catch((err) => {
+        console.error(err);
+        setError("La cámara abrió, pero el video no pudo reproducirse.");
+      });
+  }, [stream, started]);
 
   useEffect(() => {
     function handleOrientation(event: DeviceOrientationEvent) {
@@ -120,6 +154,15 @@ export default function CompatibleARDemo() {
       window.removeEventListener("deviceorientation", handleOrientation, true);
     };
   }, []);
+
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+
+    setStream(null);
+    setCameraReady(false);
+  }
 
   if (captured) {
     return (
@@ -141,9 +184,9 @@ export default function CompatibleARDemo() {
 
         <button
           onClick={() => {
+            stopCamera();
             setCaptured(false);
             setStarted(false);
-            setCameraReady(false);
           }}
           style={{
             marginTop: 20,
@@ -221,6 +264,7 @@ export default function CompatibleARDemo() {
               height: "100vh",
               objectFit: "cover",
               zIndex: 1,
+              background: "transparent",
             }}
           />
 
@@ -260,8 +304,10 @@ export default function CompatibleARDemo() {
             }}
           >
             <strong>
-              {isLookingAtPrize
-                ? "🎯 Premio encontrado"
+              {canCapturePrize
+                ? "🎯 Premio centrado"
+                : isLookingAtPrize
+                ? "⚾ Premio cerca, alinéate un poco más"
                 : "🔎 Muévete para buscar el premio"}
             </strong>
 
@@ -274,9 +320,31 @@ export default function CompatibleARDemo() {
             </p>
           </div>
 
-          {isLookingAtPrize && (
+          {error && (
+            <div
+              style={{
+                position: "fixed",
+                top: 120,
+                left: 20,
+                right: 20,
+                zIndex: 6,
+                color: "#ffb4b4",
+                background: "rgba(0,0,0,0.75)",
+                padding: 12,
+                borderRadius: 12,
+                textAlign: "center",
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          {canCapturePrize && cameraReady && (
             <button
-              onClick={() => setCaptured(true)}
+              onClick={() => {
+                stopCamera();
+                setCaptured(true);
+              }}
               style={{
                 position: "fixed",
                 zIndex: 5,
@@ -294,7 +362,26 @@ export default function CompatibleARDemo() {
             </button>
           )}
 
-          {!isLookingAtPrize && (
+          {!canCapturePrize && isLookingAtPrize && cameraReady && (
+            <div
+              style={{
+                position: "fixed",
+                zIndex: 5,
+                bottom: 30,
+                left: "50%",
+                transform: "translateX(-50%)",
+                color: "white",
+                background: "rgba(0,0,0,0.65)",
+                padding: "12px 18px",
+                borderRadius: 999,
+                fontWeight: 600,
+              }}
+            >
+              Ya casi, centra el premio
+            </div>
+          )}
+
+          {!isLookingAtPrize && cameraReady && (
             <div
               style={{
                 position: "fixed",
