@@ -2,6 +2,7 @@
 
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
+import * as THREE from "three";
 import {
   useEffect,
   useRef,
@@ -29,9 +30,44 @@ type BallOffset = {
   y: number;
 };
 
-type ChallengeState = "searching" | "holding" | "found" | "catchEnabled";
+type ChallengeState =
+  | "checkingLocation"
+  | "tooFar"
+  | "ready"
+  | "searching"
+  | "holding"
+  | "found"
+  | "catchEnabled";
 
 type ControlMode = "sensor" | "manual";
+
+type PrizeLocation = {
+  name: string;
+  latitude: number;
+  longitude: number;
+  activationRadiusMeters: number;
+};
+
+type UserLocation = {
+  latitude: number;
+  longitude: number;
+  accuracy: number | null;
+};
+
+const USE_DEMO_LOCATION = true;
+
+const demoPrize: PrizeLocation = {
+  name: "Premio Baseball Rewards",
+  latitude: 19.1738,
+  longitude: -96.1342,
+  activationRadiusMeters: 60,
+};
+
+const demoUserLocation: UserLocation = {
+  latitude: 19.17372,
+  longitude: -96.13412,
+  accuracy: 8,
+};
 
 function normalizeAngle(angle: number) {
   return ((angle % 360) + 360) % 360;
@@ -42,8 +78,89 @@ function angleDifference(a: number, b: number) {
   return Math.min(diff, 360 - diff);
 }
 
-function randomBetween(min: number, max: number) {
-  return Math.random() * (max - min) + min;
+function toRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function toDegrees(value: number) {
+  return (value * 180) / Math.PI;
+}
+
+function calculateDistanceMeters(
+  latitudeA: number,
+  longitudeA: number,
+  latitudeB: number,
+  longitudeB: number
+) {
+  const earthRadiusMeters = 6371000;
+
+  const lat1 = toRadians(latitudeA);
+  const lat2 = toRadians(latitudeB);
+  const deltaLat = toRadians(latitudeB - latitudeA);
+  const deltaLng = toRadians(longitudeB - longitudeA);
+
+  const a =
+    Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+    Math.cos(lat1) *
+      Math.cos(lat2) *
+      Math.sin(deltaLng / 2) *
+      Math.sin(deltaLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return earthRadiusMeters * c;
+}
+
+function calculateBearing(
+  latitudeA: number,
+  longitudeA: number,
+  latitudeB: number,
+  longitudeB: number
+) {
+  const lat1 = toRadians(latitudeA);
+  const lat2 = toRadians(latitudeB);
+  const deltaLng = toRadians(longitudeB - longitudeA);
+
+  const y = Math.sin(deltaLng) * Math.cos(lat2);
+  const x =
+    Math.cos(lat1) * Math.sin(lat2) -
+    Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLng);
+
+  return normalizeAngle(toDegrees(Math.atan2(y, x)));
+}
+
+function getGeoPosition(): Promise<UserLocation> {
+  return new Promise((resolve, reject) => {
+    if (USE_DEMO_LOCATION) {
+      setTimeout(() => {
+        resolve(demoUserLocation);
+      }, 400);
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      reject(new Error("Tu navegador no soporta geolocalización."));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy ?? null,
+        });
+      },
+      (error) => {
+        reject(error);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 5000,
+      }
+    );
+  });
 }
 
 function getTouchDistance(touches: TouchEvent<HTMLDivElement>["touches"]) {
@@ -62,25 +179,50 @@ function BallModel({
   visible,
   offset,
   scale,
+  revealedAt,
 }: {
   visible: boolean;
   offset: BallOffset;
   scale: number;
+  revealedAt: number | null;
 }) {
   const { scene } = useGLTF("/models/ball.glb");
+  const groupRef = useRef<THREE.Group | null>(null);
 
   useFrame(() => {
     scene.rotation.y += 0.018;
+
+    if (!groupRef.current) return;
+
+    const elapsed = revealedAt
+      ? Math.min((Date.now() - revealedAt) / 900, 1)
+      : 1;
+
+    const popScale = 0.25 + elapsed * 0.75;
+    const floating = Math.sin(Date.now() * 0.003) * 0.04;
+
+    groupRef.current.scale.setScalar(scale * popScale);
+    groupRef.current.position.set(offset.x, offset.y + floating, 0);
   });
 
   if (!visible) return null;
 
   return (
-    <primitive
-      object={scene}
-      position={[offset.x, offset.y, 0]}
-      scale={scale}
-    />
+    <group ref={groupRef}>
+      <mesh position={[0, -0.78, -0.18]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[0.55, 48]} />
+        <meshBasicMaterial color="#000000" transparent opacity={0.32} />
+      </mesh>
+
+      <pointLight
+        position={[0, 0.2, 0.9]}
+        intensity={2.8}
+        distance={3}
+        color="#ffd24a"
+      />
+
+      <primitive object={scene} />
+    </group>
   );
 }
 
@@ -115,22 +257,29 @@ export default function CompatibleARDemo() {
   });
 
   const [challengeState, setChallengeState] =
-    useState<ChallengeState>("searching");
+    useState<ChallengeState>("ready");
 
   const [holdProgress, setHoldProgress] = useState(0);
 
   const [ballOffset, setBallOffset] = useState<BallOffset>({
     x: 0,
-    y: -0.35,
+    y: -0.22,
   });
 
   const [ballScale, setBallScale] = useState(1.25);
+
+  const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
+  const [distanceToPrize, setDistanceToPrize] = useState<number | null>(null);
+  const [bearingToPrize, setBearingToPrize] = useState<number | null>(null);
+  const [revealedAt, setRevealedAt] = useState<number | null>(null);
+  const [capturedCode, setCapturedCode] = useState("");
 
   const holdStartRef = useRef<number | null>(null);
   const foundTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sensorFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
+  const locationWatchIdRef = useRef<number | null>(null);
 
   const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
   const lastPinchDistanceRef = useRef<number | null>(null);
@@ -163,7 +312,7 @@ export default function CompatibleARDemo() {
   const horizontalDiff = angleDifference(currentHorizontal, target.horizontal);
   const verticalDiff = Math.abs(currentVertical - target.vertical);
 
-  const horizontalTargetRange = 32;
+  const horizontalTargetRange = 26;
   const verticalTargetRange = 20;
 
   const isInsideTarget =
@@ -175,14 +324,119 @@ export default function CompatibleARDemo() {
 
   const canCapturePrize = challengeState === "catchEnabled";
 
-  function generateNewTarget() {
-    const randomHorizontal = randomBetween(100, 260);
-    const randomVertical = randomBetween(40, 100);
+  const isInsidePrizeRadius =
+    distanceToPrize !== null &&
+    distanceToPrize <= demoPrize.activationRadiusMeters;
+
+  function updateLocationData(location: UserLocation) {
+    const distance = calculateDistanceMeters(
+      location.latitude,
+      location.longitude,
+      demoPrize.latitude,
+      demoPrize.longitude
+    );
+
+    const bearing = calculateBearing(
+      location.latitude,
+      location.longitude,
+      demoPrize.latitude,
+      demoPrize.longitude
+    );
+
+    setUserLocation(location);
+    setDistanceToPrize(distance);
+    setBearingToPrize(bearing);
 
     setTarget({
-      horizontal: randomHorizontal,
-      vertical: randomVertical,
+      horizontal: bearing,
+      vertical: 70,
     });
+
+    return {
+      distance,
+      bearing,
+      isInside: distance <= demoPrize.activationRadiusMeters,
+    };
+  }
+
+  async function checkLocationBeforeStart() {
+    setError("");
+    setChallengeState("checkingLocation");
+
+    try {
+      const location = await getGeoPosition();
+      const result = updateLocationData(location);
+
+      if (!result.isInside) {
+        setChallengeState("tooFar");
+        setError(
+          `Estás a ${Math.round(
+            result.distance
+          )} m del premio. Acércate a menos de ${
+            demoPrize.activationRadiusMeters
+          } m para activarlo.`
+        );
+        return false;
+      }
+
+      setChallengeState("ready");
+      return true;
+    } catch (err) {
+      console.error(err);
+      setChallengeState("ready");
+      setError(
+        "No pudimos obtener tu ubicación. Revisa permisos de ubicación o prueba desde HTTPS/Vercel."
+      );
+      return false;
+    }
+  }
+
+  function startLocationWatch() {
+    if (USE_DEMO_LOCATION) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+
+    if (locationWatchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(locationWatchIdRef.current);
+    }
+
+    locationWatchIdRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        const location: UserLocation = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy ?? null,
+        };
+
+        const result = updateLocationData(location);
+
+        if (!result.isInside && started && !captured) {
+          setError(
+            `Te alejaste del premio. Estás a ${Math.round(
+              result.distance
+            )} m.`
+          );
+        }
+      },
+      (err) => {
+        console.error(err);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 3000,
+        timeout: 12000,
+      }
+    );
+  }
+
+  function stopLocationWatch() {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.geolocation &&
+      locationWatchIdRef.current !== null
+    ) {
+      navigator.geolocation.clearWatch(locationWatchIdRef.current);
+      locationWatchIdRef.current = null;
+    }
   }
 
   function clearTimers() {
@@ -231,21 +485,30 @@ export default function CompatibleARDemo() {
 
   async function startExperience() {
     setError("");
-    setChallengeState("searching");
+    setChallengeState("checkingLocation");
     setHoldProgress(0);
-    setBallOffset({ x: 0, y: -0.35 });
+    setBallOffset({ x: 0, y: -0.22 });
     setBallScale(1.25);
+    setRevealedAt(null);
     holdStartRef.current = null;
     lastTouchRef.current = null;
     lastPinchDistanceRef.current = null;
     clearTimers();
 
     try {
+      const canStartByLocation = await checkLocationBeforeStart();
+
+      if (!canStartByLocation) {
+        setStarted(false);
+        return;
+      }
+
       await requestOrientationPermission();
 
-      generateNewTarget();
       setStarted(true);
       setControlMode("sensor");
+      setChallengeState("searching");
+      startLocationWatch();
 
       sensorFallbackTimeoutRef.current = setTimeout(() => {
         setOrientation((current) => {
@@ -279,6 +542,7 @@ export default function CompatibleARDemo() {
         "No se pudo abrir la cámara. Revisa permisos o abre desde HTTPS/Vercel."
       );
       setStarted(false);
+      setChallengeState("ready");
     }
   }
 
@@ -336,7 +600,7 @@ export default function CompatibleARDemo() {
         nextOrientation.beta !== null ||
         nextOrientation.gamma !== null;
 
-      if (hasUsefulData) {
+      if (hasUsefulData && started) {
         setControlMode("sensor");
         setError("");
       }
@@ -365,11 +629,12 @@ export default function CompatibleARDemo() {
         true
       );
     };
-  }, []);
+  }, [started]);
 
   useEffect(() => {
     if (!started || !cameraReady) return;
     if (challengeState === "found" || challengeState === "catchEnabled") return;
+    if (!isInsidePrizeRadius) return;
 
     let animationFrameId: number;
 
@@ -381,13 +646,18 @@ export default function CompatibleARDemo() {
         }
 
         const elapsed = Date.now() - holdStartRef.current;
-        const progress = Math.min((elapsed / 3000) * 100, 100);
+        const progress = Math.min((elapsed / 2800) * 100, 100);
 
         setHoldProgress(progress);
 
-        if (elapsed >= 3000) {
+        if (elapsed >= 2800) {
           setChallengeState("found");
           setHoldProgress(100);
+          setRevealedAt(Date.now());
+
+          if (typeof navigator !== "undefined" && navigator.vibrate) {
+            navigator.vibrate([120, 70, 160]);
+          }
 
           if (foundTimeoutRef.current) {
             clearTimeout(foundTimeoutRef.current);
@@ -395,7 +665,7 @@ export default function CompatibleARDemo() {
 
           foundTimeoutRef.current = setTimeout(() => {
             setChallengeState("catchEnabled");
-          }, 2000);
+          }, 1700);
 
           return;
         }
@@ -413,7 +683,21 @@ export default function CompatibleARDemo() {
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [started, cameraReady, isInsideTarget, challengeState]);
+  }, [
+    started,
+    cameraReady,
+    isInsideTarget,
+    challengeState,
+    isInsidePrizeRadius,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      stopCamera();
+      stopLocationWatch();
+      clearTimers();
+    };
+  }, []);
 
   function stopCamera() {
     if (stream) {
@@ -426,19 +710,21 @@ export default function CompatibleARDemo() {
 
   function resetDemo() {
     stopCamera();
+    stopLocationWatch();
     clearTimers();
 
     setCaptured(false);
+    setCapturedCode("");
     setStarted(false);
     setError("");
-    setChallengeState("searching");
+    setChallengeState("ready");
     setHoldProgress(0);
-    setBallOffset({ x: 0, y: -0.35 });
+    setBallOffset({ x: 0, y: -0.22 });
     setBallScale(1.25);
+    setRevealedAt(null);
     holdStartRef.current = null;
     lastTouchRef.current = null;
     lastPinchDistanceRef.current = null;
-    generateNewTarget();
   }
 
   function moveManual(horizontalDelta: number, verticalDelta: number) {
@@ -522,11 +808,24 @@ export default function CompatibleARDemo() {
     lastPinchDistanceRef.current = null;
   }
 
+  function capturePrize() {
+    stopCamera();
+    stopLocationWatch();
+
+    const code = `BR-${Math.floor(10000 + Math.random() * 89999)}`;
+    setCapturedCode(code);
+    setCaptured(true);
+  }
+
   function getInstructionMessage() {
     if (showBall) {
       return canCapturePrize
         ? "🎯 Premio listo para capturar"
         : "⚾ Premio revelado";
+    }
+
+    if (!isInsidePrizeRadius && distanceToPrize !== null) {
+      return `📍 Acércate al premio: ${Math.round(distanceToPrize)} m`;
     }
 
     if (controlMode === "sensor" && !hasAnySensor) {
@@ -542,14 +841,14 @@ export default function CompatibleARDemo() {
       verticalDiff > verticalTargetRange
     ) {
       return controlMode === "manual"
-        ? "🔎 Usa los controles para buscar el premio"
-        : "🔎 Muévete a los lados y arriba/abajo";
+        ? "🔎 Usa los controles para apuntar al premio"
+        : "🔎 Gira hacia el premio y ajusta altura";
     }
 
     if (horizontalDiff > horizontalTargetRange) {
       return controlMode === "manual"
         ? "↔️ Ajusta horizontal"
-        : "↔️ Gira a los lados";
+        : "↔️ Gira hacia el premio";
     }
 
     if (verticalDiff > verticalTargetRange) {
@@ -576,12 +875,26 @@ export default function CompatibleARDemo() {
           padding: 24,
         }}
       >
-        <h1>🎉 Premio capturado</h1>
-        <p>Ganaste tu recompensa Baseball Rewards.</p>
+        <div style={successCardStyle}>
+          <div style={{ fontSize: 54 }}>🎉</div>
 
-        <button onClick={resetDemo} style={primaryButtonStyle}>
-          Reiniciar demo
-        </button>
+          <h1 style={{ margin: "8px 0" }}>Premio capturado</h1>
+
+          <p style={{ margin: 0, opacity: 0.82 }}>
+            Ganaste tu recompensa Baseball Rewards.
+          </p>
+
+          <div style={couponBoxStyle}>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Código demo</div>
+            <strong style={{ fontSize: 26, letterSpacing: 1.5 }}>
+              {capturedCode || "BR-00000"}
+            </strong>
+          </div>
+
+          <button onClick={resetDemo} style={primaryButtonStyle}>
+            Reiniciar demo
+          </button>
+        </div>
       </main>
     );
   }
@@ -607,20 +920,74 @@ export default function CompatibleARDemo() {
             textAlign: "center",
             padding: 24,
             gap: 16,
+            background:
+              "radial-gradient(circle at top, rgba(255,210,74,0.20), transparent 34%), #050505",
           }}
         >
-          <h1>Baseball Rewards AR</h1>
+          <div style={introCardStyle}>
+            <div style={{ fontSize: 52 }}>⚾</div>
 
-          <p style={{ maxWidth: 420 }}>
-            Mueve tu teléfono hasta llegar al objetivo. Cuando lo mantengas 3
-            segundos, el premio aparecerá en cámara.
-          </p>
+            <h1 style={{ margin: "8px 0 0" }}>Baseball Rewards AR</h1>
 
-          <button onClick={startExperience} style={primaryButtonStyle}>
-            Iniciar búsqueda
-          </button>
+            <p style={{ maxWidth: 420, opacity: 0.82, lineHeight: 1.45 }}>
+              Acércate al punto del premio, apunta con tu celular hacia la
+              dirección correcta y mantén la posición para revelar la recompensa.
+            </p>
 
-          {error && <p style={{ color: "#ffb4b4", maxWidth: 420 }}>{error}</p>}
+            <div style={locationPanelStyle}>
+              <strong>{demoPrize.name}</strong>
+
+              <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.82 }}>
+                Radio de activación: {demoPrize.activationRadiusMeters} m
+              </p>
+
+              {distanceToPrize !== null && (
+                <p
+                  style={{
+                    margin: "8px 0 0",
+                    color: isInsidePrizeRadius ? "#8dffb0" : "#ffca7a",
+                    fontWeight: 800,
+                  }}
+                >
+                  Estás a {Math.round(distanceToPrize)} m del premio
+                </p>
+              )}
+
+              {bearingToPrize !== null && (
+                <p style={{ margin: "4px 0 0", fontSize: 12, opacity: 0.7 }}>
+                  Dirección al premio: {Math.round(bearingToPrize)}°
+                </p>
+              )}
+
+              {userLocation?.accuracy !== null &&
+                userLocation?.accuracy !== undefined && (
+                  <p style={{ margin: "4px 0 0", fontSize: 12, opacity: 0.7 }}>
+                    Precisión GPS: ±{Math.round(userLocation.accuracy)} m
+                  </p>
+                )}
+
+              {USE_DEMO_LOCATION && (
+                <p style={{ margin: "8px 0 0", fontSize: 12, opacity: 0.58 }}>
+                  Modo demo activo: simula que estás cerca del premio.
+                </p>
+              )}
+            </div>
+
+            <button
+              onClick={startExperience}
+              style={{
+                ...primaryButtonStyle,
+                opacity: challengeState === "checkingLocation" ? 0.7 : 1,
+              }}
+              disabled={challengeState === "checkingLocation"}
+            >
+              {challengeState === "checkingLocation"
+                ? "Validando ubicación..."
+                : "Iniciar búsqueda AR"}
+            </button>
+
+            {error && <p style={{ color: "#ffb4b4", maxWidth: 420 }}>{error}</p>}
+          </div>
         </section>
       )}
 
@@ -653,6 +1020,9 @@ export default function CompatibleARDemo() {
                 zIndex: 2,
                 touchAction: "none",
                 pointerEvents: showBall ? "auto" : "none",
+                filter: showBall
+                  ? "drop-shadow(0 0 18px rgba(255,210,74,0.65))"
+                  : "none",
               }}
             >
               <Canvas
@@ -660,12 +1030,14 @@ export default function CompatibleARDemo() {
                 gl={{ alpha: true }}
                 style={{ background: "transparent" }}
               >
-                <ambientLight intensity={1.5} />
+                <ambientLight intensity={1.35} />
                 <directionalLight position={[5, 5, 5]} intensity={2} />
+
                 <BallModel
                   visible={showBall}
                   offset={ballOffset}
                   scale={ballScale}
+                  revealedAt={revealedAt}
                 />
               </Canvas>
             </div>
@@ -684,16 +1056,18 @@ export default function CompatibleARDemo() {
                 }}
               >
                 <div style={debugBoxStyle}>
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>Objetivo H</div>
-                  <div style={{ fontSize: 30, fontWeight: 900 }}>
-                    {Math.round(target.horizontal)}°
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>Premio</div>
+                  <div style={{ fontSize: 24, fontWeight: 900 }}>
+                    {distanceToPrize !== null
+                      ? `${Math.round(distanceToPrize)} m`
+                      : "--"}
                   </div>
                 </div>
 
                 <div style={debugBoxStyle}>
-                  <div style={{ fontSize: 12, opacity: 0.75 }}>Objetivo V</div>
-                  <div style={{ fontSize: 30, fontWeight: 900 }}>
-                    {Math.round(target.vertical)}°
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>Dirección</div>
+                  <div style={{ fontSize: 24, fontWeight: 900 }}>
+                    {Math.round(target.horizontal)}°
                   </div>
                 </div>
               </div>
@@ -707,14 +1081,14 @@ export default function CompatibleARDemo() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: 11, opacity: 0.7 }}>Actual H</div>
+                  <div style={{ fontSize: 11, opacity: 0.7 }}>Apuntas H</div>
                   <div style={{ fontSize: 20, fontWeight: 800 }}>
                     {Math.round(currentHorizontal)}°
                   </div>
                 </div>
 
                 <div>
-                  <div style={{ fontSize: 11, opacity: 0.7 }}>Actual V</div>
+                  <div style={{ fontSize: 11, opacity: 0.7 }}>Apuntas V</div>
                   <div style={{ fontSize: 20, fontWeight: 800 }}>
                     {Math.round(currentVertical)}°
                   </div>
@@ -722,13 +1096,13 @@ export default function CompatibleARDemo() {
               </div>
 
               <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.85 }}>
-                Diferencia H: {Math.round(horizontalDiff)}° / V:{" "}
+                Diferencia H: {Math.round(horizontalDiff)}° / V: {" "}
                 {Math.round(verticalDiff)}°
               </p>
 
               <p style={{ margin: "4px 0 0", opacity: 0.6, fontSize: 11 }}>
                 Modo: {controlMode === "sensor" ? "sensores" : "compatible"} /
-                Sensor: {orientation.source} / H:{" "}
+                Sensor: {orientation.source} / H: {" "}
                 {shouldUseGammaForHorizontal ? "gamma" : "alpha"}
               </p>
 
@@ -813,7 +1187,7 @@ export default function CompatibleARDemo() {
           )}
 
           {challengeState === "holding" && cameraReady && !showBall && (
-            <div style={bottomPillStyle}>Mantén 3 segundos...</div>
+            <div style={bottomPillStyle}>Mantén la dirección...</div>
           )}
 
           {challengeState === "found" && cameraReady && (
@@ -821,13 +1195,7 @@ export default function CompatibleARDemo() {
           )}
 
           {canCapturePrize && cameraReady && (
-            <button
-              onClick={() => {
-                stopCamera();
-                setCaptured(true);
-              }}
-              style={captureButtonStyle}
-            >
+            <button onClick={capturePrize} style={captureButtonStyle}>
               🎁 Capturar premio
             </button>
           )}
@@ -835,8 +1203,8 @@ export default function CompatibleARDemo() {
           {challengeState === "searching" && cameraReady && !showBall && (
             <div style={bottomPillStyle}>
               {controlMode === "manual"
-                ? "Usa los controles para llegar al objetivo"
-                : "Busca el ángulo objetivo"}
+                ? "Usa los controles para apuntar al premio"
+                : "Apunta hacia la dirección del premio"}
             </div>
           )}
         </>
@@ -846,12 +1214,35 @@ export default function CompatibleARDemo() {
 }
 
 const primaryButtonStyle: CSSProperties = {
-  marginTop: 20,
-  padding: "14px 24px",
+  marginTop: 16,
+  padding: "15px 26px",
   borderRadius: 999,
   border: "none",
-  fontWeight: 800,
+  fontWeight: 900,
   fontSize: 16,
+  color: "#111",
+  background:
+    "linear-gradient(135deg, #ffdd55 0%, #ffb02e 45%, #ff7a00 100%)",
+  boxShadow: "0 12px 28px rgba(255, 157, 0, 0.35)",
+};
+
+const introCardStyle: CSSProperties = {
+  width: "100%",
+  maxWidth: 440,
+  background: "rgba(255,255,255,0.08)",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 26,
+  padding: 22,
+  boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
+  backdropFilter: "blur(10px)",
+};
+
+const locationPanelStyle: CSSProperties = {
+  marginTop: 16,
+  background: "rgba(0,0,0,0.35)",
+  borderRadius: 18,
+  padding: 14,
+  border: "1px solid rgba(255,255,255,0.10)",
 };
 
 const debugCardStyle: CSSProperties = {
@@ -962,4 +1353,22 @@ const captureButtonStyle: CSSProperties = {
   background:
     "linear-gradient(135deg, #ffdd55 0%, #ff9f1c 45%, #ff6b00 100%)",
   boxShadow: "0 12px 32px rgba(255, 157, 0, 0.42)",
+};
+
+const successCardStyle: CSSProperties = {
+  width: "100%",
+  maxWidth: 420,
+  background: "rgba(255,255,255,0.08)",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 26,
+  padding: 24,
+  boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
+};
+
+const couponBoxStyle: CSSProperties = {
+  marginTop: 18,
+  padding: 16,
+  borderRadius: 18,
+  background: "rgba(255,210,74,0.14)",
+  border: "1px dashed rgba(255,210,74,0.7)",
 };
