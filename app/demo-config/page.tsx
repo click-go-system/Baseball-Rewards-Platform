@@ -89,6 +89,107 @@ function getCurrentLocation(): Promise<UserLocation> {
   });
 }
 
+function injectLeafletCss() {
+  if (typeof document === "undefined") return;
+
+  if (!document.querySelector('link[data-leaflet-css="true"]')) {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+    link.setAttribute("data-leaflet-css", "true");
+    document.head.appendChild(link);
+  }
+
+  if (document.querySelector('style[data-leaflet-critical-css="true"]')) return;
+
+  const style = document.createElement("style");
+  style.setAttribute("data-leaflet-critical-css", "true");
+  style.textContent = `
+    .leaflet-container {
+      overflow: hidden;
+      position: relative;
+      width: 100%;
+      height: 100%;
+      touch-action: pan-x pan-y;
+      background: #ddd;
+      outline: 0;
+      font-family: Arial, Helvetica, sans-serif;
+    }
+    .leaflet-pane,
+    .leaflet-tile,
+    .leaflet-marker-icon,
+    .leaflet-marker-shadow,
+    .leaflet-tile-container,
+    .leaflet-pane > svg,
+    .leaflet-pane > canvas,
+    .leaflet-zoom-box,
+    .leaflet-image-layer,
+    .leaflet-layer {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+    .leaflet-container img {
+      max-width: none !important;
+      max-height: none !important;
+    }
+    .leaflet-tile {
+      width: 256px;
+      height: 256px;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    .leaflet-marker-icon {
+      display: block;
+    }
+    .leaflet-control {
+      position: relative;
+      z-index: 800;
+      pointer-events: auto;
+    }
+    .leaflet-top, .leaflet-bottom {
+      position: absolute;
+      z-index: 1000;
+      pointer-events: none;
+    }
+    .leaflet-top { top: 0; }
+    .leaflet-right { right: 0; }
+    .leaflet-bottom { bottom: 0; }
+    .leaflet-left { left: 0; }
+    .leaflet-control-zoom {
+      border: 2px solid rgba(0,0,0,0.2);
+      background: #fff;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-left: 10px;
+      margin-top: 10px;
+    }
+    .leaflet-control-zoom a {
+      display: block;
+      width: 30px;
+      height: 30px;
+      line-height: 30px;
+      text-align: center;
+      text-decoration: none;
+      color: #000;
+      font: bold 18px Arial, Helvetica, sans-serif;
+      background: #fff;
+      border-bottom: 1px solid #ccc;
+    }
+    .leaflet-control-attribution {
+      background: rgba(255,255,255,0.8);
+      padding: 0 5px;
+      font-size: 11px;
+      margin-right: 0;
+      margin-bottom: 0;
+    }
+    .leaflet-interactive {
+      cursor: pointer;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 export default function DemoConfigPage() {
   const [config, setConfig] = useState<DemoConfig>(defaultConfig);
   const [status, setStatus] = useState("");
@@ -112,20 +213,7 @@ export default function DemoConfigPage() {
     async function setupLeaflet() {
       if (!mapDivRef.current || mapInstanceRef.current) return;
 
-      const existingCss = document.querySelector(
-        'link[data-leaflet-css="true"]'
-      );
-
-      if (!existingCss) {
-        const link = document.createElement("link");
-        link.rel = "stylesheet";
-        link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-        link.integrity =
-          "sha256-p4NxAoJBhIINfQF1pJqrRrg22nE3veN4mM9RZTgZhn4=";
-        link.crossOrigin = "";
-        link.setAttribute("data-leaflet-css", "true");
-        document.head.appendChild(link);
-      }
+      injectLeafletCss();
 
       const L = await import("leaflet");
       if (cancelled || !mapDivRef.current) return;
@@ -142,6 +230,9 @@ export default function DemoConfigPage() {
         center: initialLatLng,
         zoom: 17,
         zoomControl: true,
+        scrollWheelZoom: true,
+        dragging: true,
+        touchZoom: true,
       });
 
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -185,9 +276,9 @@ export default function DemoConfigPage() {
 
       setLeafletReady(true);
 
-      setTimeout(() => {
-        map.invalidateSize();
-      }, 250);
+      setTimeout(() => map.invalidateSize(), 150);
+      setTimeout(() => map.invalidateSize(), 500);
+      setTimeout(() => map.invalidateSize(), 1000);
     }
 
     setupLeaflet();
@@ -446,11 +537,14 @@ const mapShellStyle: CSSProperties = {
   overflow: "hidden",
   border: "1px solid rgba(255,255,255,0.16)",
   background: "rgba(0,0,0,0.35)",
+  touchAction: "pan-x pan-y",
 };
 
 const mapStyle: CSSProperties = {
   width: "100%",
   height: "100%",
+  minHeight: 430,
+  touchAction: "pan-x pan-y",
 };
 
 const mapLoadingStyle: CSSProperties = {
