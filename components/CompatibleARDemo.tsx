@@ -37,10 +37,21 @@ type ChallengeState =
   | "tooFar"
   | "ready"
   | "searching"
+  | "focusChallenge"
   | "holding"
   | "found"
   | "catchEnabled"
   | "collected";
+
+type FocusPosition = {
+  x: number;
+  y: number;
+};
+
+type FocusBaseline = {
+  horizontal: number;
+  vertical: number;
+};
 
 type ControlMode = "sensor" | "manual";
 
@@ -60,6 +71,14 @@ type UserLocation = {
 
 const CONFIG_STORAGE_KEY = "baseballArDemoConfig";
 const COLLECTION_SCALE = 3.75;
+const FOCUS_HOLD_MS = 850;
+const FOCUS_TARGET_RADIUS = 9;
+
+const focusTargets: FocusPosition[] = [
+  { x: 28, y: 36 },
+  { x: 72, y: 43 },
+  { x: 50, y: 64 },
+];
 
 const defaultConfig: DemoConfig = {
   prizeName: "Premio Baseball Rewards",
@@ -78,6 +97,14 @@ function angleDifference(a: number, b: number) {
   return Math.min(diff, 360 - diff);
 }
 
+function signedAngleDifference(a: number, b: number) {
+  return ((normalizeAngle(a) - normalizeAngle(b) + 540) % 360) - 180;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function toRadians(value: number) {
   return (value * Math.PI) / 180;
 }
@@ -90,7 +117,7 @@ function calculateDistanceMeters(
   latitudeA: number,
   longitudeA: number,
   latitudeB: number,
-  longitudeB: number
+  longitudeB: number,
 ) {
   const earthRadiusMeters = 6371000;
 
@@ -115,7 +142,7 @@ function calculateBearing(
   latitudeA: number,
   longitudeA: number,
   latitudeB: number,
-  longitudeB: number
+  longitudeB: number,
 ) {
   const lat1 = toRadians(latitudeA);
   const lat2 = toRadians(latitudeB);
@@ -205,7 +232,7 @@ function getGeoPosition(config: DemoConfig): Promise<UserLocation> {
         enableHighAccuracy: true,
         timeout: 12000,
         maximumAge: 3000,
-      }
+      },
     );
   });
 }
@@ -323,9 +350,7 @@ function Confetti() {
       delay: `${(index % 18) * 0.08}s`,
       duration: `${2.3 + (index % 9) * 0.16}s`,
       rotate: `${(index * 29) % 360}deg`,
-      color: ["#ffdd55", "#ff7a00", "#2cff8f", "#49a8ff", "#ff4fd8"][
-        index % 5
-      ],
+      color: ["#ffdd55", "#ff7a00", "#2cff8f", "#49a8ff", "#ff4fd8"][index % 5],
     }));
   }, []);
 
@@ -390,8 +415,7 @@ export default function CompatibleARDemo() {
     vertical: 70,
   });
 
-  const [challengeState, setChallengeState] =
-    useState<ChallengeState>("ready");
+  const [challengeState, setChallengeState] = useState<ChallengeState>("ready");
 
   const [holdProgress, setHoldProgress] = useState(0);
 
@@ -407,13 +431,26 @@ export default function CompatibleARDemo() {
   const [bearingToPrize, setBearingToPrize] = useState<number | null>(null);
   const [revealedAt, setRevealedAt] = useState<number | null>(null);
   const [capturedCode, setCapturedCode] = useState("");
+  const [focusIndex, setFocusIndex] = useState(0);
+  const [focusProgress, setFocusProgress] = useState(0);
+  const [focusBaseline, setFocusBaseline] = useState<FocusBaseline | null>(
+    null,
+  );
+  const [manualFocusPosition, setManualFocusPosition] = useState<FocusPosition>(
+    {
+      x: 50,
+      y: 50,
+    },
+  );
 
   const holdStartRef = useRef<number | null>(null);
   const foundTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sensorFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
+    null,
   );
   const locationWatchIdRef = useRef<number | null>(null);
+  const previewLocationWatchIdRef = useRef<number | null>(null);
+  const focusHoldStartRef = useRef<number | null>(null);
 
   const lastTouchRef = useRef<{ x: number; y: number } | null>(null);
   const lastPinchDistanceRef = useRef<number | null>(null);
@@ -425,7 +462,7 @@ export default function CompatibleARDemo() {
   const hasAnySensor = hasAlpha || hasBeta || hasGamma;
 
   const sensorHorizontal = normalizeAngle(orientation.alpha ?? 0);
-  const sensorVertical = hasBeta ? orientation.beta ?? 0 : 70;
+  const sensorVertical = hasBeta ? (orientation.beta ?? 0) : 70;
 
   const currentHorizontal =
     controlMode === "manual"
@@ -454,23 +491,69 @@ export default function CompatibleARDemo() {
     distanceToPrize !== null &&
     distanceToPrize <= config.activationRadiusMeters;
 
+  const currentFocusTarget = focusTargets[focusIndex] ?? focusTargets[0];
+
+  const sensorFocusPosition: FocusPosition = focusBaseline
+    ? {
+        x: clamp(
+          50 +
+            signedAngleDifference(currentHorizontal, focusBaseline.horizontal) *
+              1.35,
+          8,
+          92,
+        ),
+        y: clamp(
+          50 + (currentVertical - focusBaseline.vertical) * 1.15,
+          16,
+          84,
+        ),
+      }
+    : { x: 50, y: 50 };
+
+  const focusPosition =
+    controlMode === "manual" ? manualFocusPosition : sensorFocusPosition;
+
+  const focusDistance = Math.sqrt(
+    Math.pow(focusPosition.x - currentFocusTarget.x, 2) +
+      Math.pow(focusPosition.y - currentFocusTarget.y, 2),
+  );
+
+  const isInsideFocusTarget =
+    challengeState === "focusChallenge" && focusDistance <= FOCUS_TARGET_RADIUS;
+
+  const locationStatusMessage =
+    distanceToPrize === null
+      ? "Validando ubicación del premio..."
+      : isInsidePrizeRadius
+        ? "Ya estás dentro del radio. Detente en un lugar seguro para iniciar."
+        : `Estás a ${Math.round(distanceToPrize)} m. Sigue acercándote a la zona.`;
+
   useEffect(() => {
-    setConfig(loadConfigFromStorage());
+    const loadedConfig = loadConfigFromStorage();
+    setConfig(loadedConfig);
+    startPreviewLocationWatch(loadedConfig);
+
+    return () => {
+      stopPreviewLocationWatch();
+    };
   }, []);
 
-  function updateLocationData(location: UserLocation) {
+  function updateLocationDataForConfig(
+    location: UserLocation,
+    activeConfig: DemoConfig,
+  ) {
     const distance = calculateDistanceMeters(
       location.latitude,
       location.longitude,
-      config.latitude,
-      config.longitude
+      activeConfig.latitude,
+      activeConfig.longitude,
     );
 
     const bearing = calculateBearing(
       location.latitude,
       location.longitude,
-      config.latitude,
-      config.longitude
+      activeConfig.latitude,
+      activeConfig.longitude,
     );
 
     setUserLocation(location);
@@ -485,8 +568,12 @@ export default function CompatibleARDemo() {
     return {
       distance,
       bearing,
-      isInside: distance <= config.activationRadiusMeters,
+      isInside: distance <= activeConfig.activationRadiusMeters,
     };
+  }
+
+  function updateLocationData(location: UserLocation) {
+    return updateLocationDataForConfig(location, config);
   }
 
   async function checkLocationBeforeStart() {
@@ -501,10 +588,10 @@ export default function CompatibleARDemo() {
         setChallengeState("tooFar");
         setError(
           `Estás a ${Math.round(
-            result.distance
+            result.distance,
           )} m del premio. Acércate a menos de ${
             config.activationRadiusMeters
-          } m para activarlo.`
+          } m para activarlo.`,
         );
         return false;
       }
@@ -515,14 +602,86 @@ export default function CompatibleARDemo() {
       console.error(err);
       setChallengeState("ready");
       setError(
-        "No pudimos obtener tu ubicación. Revisa permisos de ubicación o prueba desde HTTPS/Vercel."
+        "No pudimos obtener tu ubicación. Revisa permisos de ubicación o prueba desde HTTPS/Vercel.",
       );
       return false;
     }
   }
 
-  function startLocationWatch() {
-    if (config.demoLocal) return;
+  function stopPreviewLocationWatch() {
+    if (
+      typeof navigator !== "undefined" &&
+      navigator.geolocation &&
+      previewLocationWatchIdRef.current !== null
+    ) {
+      navigator.geolocation.clearWatch(previewLocationWatchIdRef.current);
+      previewLocationWatchIdRef.current = null;
+    }
+  }
+
+  function startPreviewLocationWatch(activeConfig: DemoConfig) {
+    stopPreviewLocationWatch();
+
+    if (activeConfig.demoLocal) {
+      updateLocationDataForConfig(
+        createDemoUserLocation(activeConfig),
+        activeConfig,
+      );
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setError("Tu navegador no soporta geolocalización.");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        updateLocationDataForConfig(
+          {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy ?? null,
+          },
+          activeConfig,
+        );
+      },
+      () => {
+        setError(
+          "Permite la ubicación para ver la distancia al premio en tiempo real.",
+        );
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 2000,
+        timeout: 12000,
+      },
+    );
+
+    previewLocationWatchIdRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        updateLocationDataForConfig(
+          {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            accuracy: position.coords.accuracy ?? null,
+          },
+          activeConfig,
+        );
+      },
+      (err) => {
+        console.error(err);
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 1500,
+        timeout: 12000,
+      },
+    );
+  }
+
+  function startLocationWatch(activeConfig: DemoConfig) {
+    if (activeConfig.demoLocal) return;
     if (typeof navigator === "undefined" || !navigator.geolocation) return;
 
     if (locationWatchIdRef.current !== null) {
@@ -537,13 +696,11 @@ export default function CompatibleARDemo() {
           accuracy: position.coords.accuracy ?? null,
         };
 
-        const result = updateLocationData(location);
+        const result = updateLocationDataForConfig(location, activeConfig);
 
         if (!result.isInside && started && !captured) {
           setError(
-            `Te alejaste del premio. Estás a ${Math.round(
-              result.distance
-            )} m.`
+            `Te alejaste del premio. Estás a ${Math.round(result.distance)} m.`,
           );
         }
       },
@@ -554,7 +711,7 @@ export default function CompatibleARDemo() {
         enableHighAccuracy: true,
         maximumAge: 2000,
         timeout: 12000,
-      }
+      },
     );
   }
 
@@ -590,12 +747,15 @@ export default function CompatibleARDemo() {
           requestPermission?: () => Promise<"granted" | "denied">;
         };
 
-      if (typeof DeviceOrientationEventTyped?.requestPermission === "function") {
-        const permission = await DeviceOrientationEventTyped.requestPermission();
+      if (
+        typeof DeviceOrientationEventTyped?.requestPermission === "function"
+      ) {
+        const permission =
+          await DeviceOrientationEventTyped.requestPermission();
 
         if (permission !== "granted") {
           setError(
-            "No se concedió permiso para usar el movimiento del celular. Se activará modo compatible."
+            "No se concedió permiso para usar el movimiento del celular. Se activará modo compatible.",
           );
           setControlMode("manual");
           return false;
@@ -606,7 +766,7 @@ export default function CompatibleARDemo() {
     } catch (err) {
       console.error(err);
       setError(
-        "No se pudo solicitar permiso de movimiento. Se activará modo compatible."
+        "No se pudo solicitar permiso de movimiento. Se activará modo compatible.",
       );
       setControlMode("manual");
       return false;
@@ -620,6 +780,10 @@ export default function CompatibleARDemo() {
     setError("");
     setChallengeState("checkingLocation");
     setHoldProgress(0);
+    setFocusIndex(0);
+    setFocusProgress(0);
+    setFocusBaseline(null);
+    setManualFocusPosition({ x: 50, y: 50 });
     setBallOffset({ x: 0, y: -0.16 });
     setBallScale(0.36);
     setRevealedAt(null);
@@ -631,34 +795,16 @@ export default function CompatibleARDemo() {
     try {
       const canStartByLocation = await getGeoPosition(latestConfig)
         .then((location) => {
-          const distance = calculateDistanceMeters(
-            location.latitude,
-            location.longitude,
-            latestConfig.latitude,
-            latestConfig.longitude
-          );
+          const result = updateLocationDataForConfig(location, latestConfig);
 
-          const bearing = calculateBearing(
-            location.latitude,
-            location.longitude,
-            latestConfig.latitude,
-            latestConfig.longitude
-          );
-
-          setUserLocation(location);
-          setDistanceToPrize(distance);
-          setBearingToPrize(bearing);
-          setTarget({ horizontal: bearing, vertical: 70 });
-
-          if (distance > latestConfig.activationRadiusMeters) {
+          if (!result.isInside) {
             setChallengeState("tooFar");
             setError(
               `Estás a ${Math.round(
-                distance
-              )} m del premio. Acércate a menos de ${
-                latestConfig.activationRadiusMeters
-              } m para activarlo.`
+                result.distance,
+              )} m del premio. Sigue acercándote a la zona marcada.`,
             );
+            startPreviewLocationWatch(latestConfig);
             return false;
           }
 
@@ -669,7 +815,7 @@ export default function CompatibleARDemo() {
           console.error(err);
           setChallengeState("ready");
           setError(
-            "No pudimos obtener tu ubicación. Revisa permisos de ubicación o prueba desde HTTPS/Vercel."
+            "No pudimos obtener tu ubicación. Revisa permisos de ubicación o prueba desde HTTPS/Vercel.",
           );
           return false;
         });
@@ -681,20 +827,30 @@ export default function CompatibleARDemo() {
 
       await requestOrientationPermission();
 
+      stopPreviewLocationWatch();
       setStarted(true);
       setControlMode("sensor");
-      setChallengeState("searching");
-      startLocationWatch();
+      setFocusIndex(0);
+      setFocusProgress(0);
+      setManualFocusPosition({ x: 50, y: 50 });
+      setFocusBaseline({
+        horizontal: currentHorizontal,
+        vertical: currentVertical,
+      });
+      setChallengeState("focusChallenge");
+      startLocationWatch(latestConfig);
 
       sensorFallbackTimeoutRef.current = setTimeout(() => {
         setOrientation((current) => {
           const hasUsefulSensor =
-            current.alpha !== null || current.beta !== null || current.gamma !== null;
+            current.alpha !== null ||
+            current.beta !== null ||
+            current.gamma !== null;
 
           if (!hasUsefulSensor) {
             setControlMode("manual");
             setError(
-              "Tu navegador no entregó sensores de movimiento. Activamos modo compatible."
+              "Tu navegador no entregó sensores de movimiento. Activamos modo compatible.",
             );
           }
 
@@ -713,7 +869,7 @@ export default function CompatibleARDemo() {
     } catch (err) {
       console.error(err);
       setError(
-        "No se pudo abrir la cámara. Revisa permisos o abre desde HTTPS/Vercel."
+        "No se pudo abrir la cámara. Revisa permisos o abre desde HTTPS/Vercel.",
       );
       setStarted(false);
       setChallengeState("ready");
@@ -737,7 +893,10 @@ export default function CompatibleARDemo() {
   }, [stream, started]);
 
   useEffect(() => {
-    function updateOrientation(event: DeviceOrientationEvent, eventName: string) {
+    function updateOrientation(
+      event: DeviceOrientationEvent,
+      eventName: string,
+    ) {
       const headingResult = getEventHeading(event);
 
       const nextOrientation: OrientationState = {
@@ -774,7 +933,7 @@ export default function CompatibleARDemo() {
     window.addEventListener(
       "deviceorientationabsolute",
       handleOrientationAbsolute,
-      true
+      true,
     );
 
     return () => {
@@ -782,60 +941,71 @@ export default function CompatibleARDemo() {
       window.removeEventListener(
         "deviceorientationabsolute",
         handleOrientationAbsolute,
-        true
+        true,
       );
     };
   }, [started]);
 
   useEffect(() => {
     if (!started || !cameraReady) return;
-    if (challengeState === "found" || challengeState === "catchEnabled") return;
+    if (challengeState !== "focusChallenge") return;
     if (!isInsidePrizeRadius) return;
 
     let animationFrameId: number;
 
-    function updateHold() {
-      if (isInsideTarget) {
-        if (holdStartRef.current === null) {
-          holdStartRef.current = Date.now();
-          setChallengeState("holding");
-        }
+    function revealPrizeAfterFocus() {
+      setChallengeState("found");
+      setFocusProgress(100);
+      setRevealedAt(Date.now());
+      setBallScale(0.36);
 
-        const elapsed = Date.now() - holdStartRef.current;
-        const progress = Math.min((elapsed / 2300) * 100, 100);
-
-        setHoldProgress(progress);
-
-        if (elapsed >= 2300) {
-          setChallengeState("found");
-          setHoldProgress(100);
-          setRevealedAt(Date.now());
-          setBallScale(0.36);
-
-          if (typeof navigator !== "undefined" && navigator.vibrate) {
-            navigator.vibrate([120, 70, 160]);
-          }
-
-          if (foundTimeoutRef.current) {
-            clearTimeout(foundTimeoutRef.current);
-          }
-
-          foundTimeoutRef.current = setTimeout(() => {
-            setChallengeState("catchEnabled");
-          }, 1100);
-
-          return;
-        }
-      } else {
-        holdStartRef.current = null;
-        setHoldProgress(0);
-        setChallengeState("searching");
+      if (typeof navigator !== "undefined" && navigator.vibrate) {
+        navigator.vibrate([120, 70, 160]);
       }
 
-      animationFrameId = requestAnimationFrame(updateHold);
+      if (foundTimeoutRef.current) {
+        clearTimeout(foundTimeoutRef.current);
+      }
+
+      foundTimeoutRef.current = setTimeout(() => {
+        setChallengeState("catchEnabled");
+      }, 900);
     }
 
-    animationFrameId = requestAnimationFrame(updateHold);
+    function updateFocus() {
+      if (isInsideFocusTarget) {
+        if (focusHoldStartRef.current === null) {
+          focusHoldStartRef.current = Date.now();
+        }
+
+        const elapsed = Date.now() - focusHoldStartRef.current;
+        const progress = Math.min((elapsed / FOCUS_HOLD_MS) * 100, 100);
+        setFocusProgress(progress);
+
+        if (elapsed >= FOCUS_HOLD_MS) {
+          focusHoldStartRef.current = null;
+          setFocusProgress(0);
+
+          if (focusIndex >= focusTargets.length - 1) {
+            revealPrizeAfterFocus();
+            return;
+          }
+
+          setFocusIndex((current) => current + 1);
+
+          if (typeof navigator !== "undefined" && navigator.vibrate) {
+            navigator.vibrate(80);
+          }
+        }
+      } else {
+        focusHoldStartRef.current = null;
+        setFocusProgress(0);
+      }
+
+      animationFrameId = requestAnimationFrame(updateFocus);
+    }
+
+    animationFrameId = requestAnimationFrame(updateFocus);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
@@ -843,8 +1013,9 @@ export default function CompatibleARDemo() {
   }, [
     started,
     cameraReady,
-    isInsideTarget,
     challengeState,
+    focusIndex,
+    isInsideFocusTarget,
     isInsidePrizeRadius,
   ]);
 
@@ -859,6 +1030,7 @@ export default function CompatibleARDemo() {
     return () => {
       stopCamera();
       stopLocationWatch();
+      stopPreviewLocationWatch();
       clearTimers();
     };
   }, []);
@@ -883,20 +1055,26 @@ export default function CompatibleARDemo() {
     setError("");
     setChallengeState("ready");
     setHoldProgress(0);
+    setFocusIndex(0);
+    setFocusProgress(0);
+    setFocusBaseline(null);
+    setManualFocusPosition({ x: 50, y: 50 });
     setBallOffset({ x: 0, y: -0.16 });
     setBallScale(0.36);
     setRevealedAt(null);
     holdStartRef.current = null;
     lastTouchRef.current = null;
     lastPinchDistanceRef.current = null;
-    setConfig(loadConfigFromStorage());
+    const latestConfig = loadConfigFromStorage();
+    setConfig(latestConfig);
+    startPreviewLocationWatch(latestConfig);
   }
 
   function moveManual(horizontalDelta: number, verticalDelta: number) {
     setManualPosition((current) => {
       const nextVertical = Math.max(
         0,
-        Math.min(140, current.vertical + verticalDelta)
+        Math.min(140, current.vertical + verticalDelta),
       );
 
       return {
@@ -904,6 +1082,13 @@ export default function CompatibleARDemo() {
         vertical: nextVertical,
       };
     });
+  }
+
+  function moveFocusManual(xDelta: number, yDelta: number) {
+    setManualFocusPosition((current) => ({
+      x: clamp(current.x + xDelta, 8, 92),
+      y: clamp(current.y + yDelta, 16, 84),
+    }));
   }
 
   function handleBallTouchStart(event: TouchEvent<HTMLDivElement>) {
@@ -960,7 +1145,7 @@ export default function CompatibleARDemo() {
         const zoomFactor = 0.009;
 
         setBallScale((current) =>
-          Math.max(0.28, Math.min(4.8, current + delta * zoomFactor))
+          Math.max(0.28, Math.min(4.8, current + delta * zoomFactor)),
         );
       }
 
@@ -995,6 +1180,10 @@ export default function CompatibleARDemo() {
       return canZoomPrize
         ? "🫳 Acerca la pelota con dos dedos"
         : "⚾ Premio revelado";
+    }
+
+    if (challengeState === "focusChallenge") {
+      return `🎯 Enfoca la señal ${Math.min(focusIndex + 1, focusTargets.length)}/${focusTargets.length}`;
     }
 
     if (!isInsidePrizeRadius && distanceToPrize !== null) {
@@ -1107,8 +1296,8 @@ export default function CompatibleARDemo() {
             <h1 style={{ margin: "8px 0 0" }}>Baseball Rewards AR</h1>
 
             <p style={{ maxWidth: 420, opacity: 0.82, lineHeight: 1.45 }}>
-              Acércate al punto del premio, apunta con tu celular hacia la
-              dirección correcta y acerca la pelota con dos dedos hasta
+              Acércate a la zona marcada, detente en un lugar seguro, completa
+              el reto de enfoque y acerca la pelota con dos dedos hasta
               recolectarla.
             </p>
 
@@ -1147,6 +1336,33 @@ export default function CompatibleARDemo() {
               <p style={{ margin: "8px 0 0", fontSize: 12, opacity: 0.58 }}>
                 Modo: {config.demoLocal ? "Demo local" : "GPS real"}
               </p>
+
+              <div style={approachStatusStyle}>
+                <strong>{locationStatusMessage}</strong>
+                <div style={approachBarStyle}>
+                  <div
+                    style={{
+                      ...approachBarFillStyle,
+                      width: `${Math.max(
+                        8,
+                        Math.min(
+                          100,
+                          distanceToPrize === null
+                            ? 8
+                            : 100 -
+                                (distanceToPrize /
+                                  config.activationRadiusMeters) *
+                                  100,
+                        ),
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <p style={{ margin: "8px 0 0", fontSize: 12, opacity: 0.72 }}>
+                  Por seguridad, no uses AR mientras caminas. Inicia el reto
+                  únicamente cuando estés detenido.
+                </p>
+              </div>
             </div>
 
             <button
@@ -1155,18 +1371,27 @@ export default function CompatibleARDemo() {
                 ...primaryButtonStyle,
                 opacity: challengeState === "checkingLocation" ? 0.7 : 1,
               }}
-              disabled={challengeState === "checkingLocation"}
+              disabled={
+                challengeState === "checkingLocation" ||
+                (distanceToPrize !== null && !isInsidePrizeRadius)
+              }
             >
               {challengeState === "checkingLocation"
                 ? "Validando ubicación..."
-                : "Iniciar búsqueda AR"}
+                : isInsidePrizeRadius
+                  ? "Estoy detenido, iniciar reto"
+                  : distanceToPrize === null
+                    ? "Validar ubicación"
+                    : "Acércate para activar"}
             </button>
 
             <Link href="/demo-config" style={secondaryLinkButtonStyle}>
               ⚙️ Configurar demo
             </Link>
 
-            {error && <p style={{ color: "#ffb4b4", maxWidth: 420 }}>{error}</p>}
+            {error && (
+              <p style={{ color: "#ffb4b4", maxWidth: 420 }}>{error}</p>
+            )}
           </div>
         </section>
       )}
@@ -1223,9 +1448,63 @@ export default function CompatibleARDemo() {
             </div>
           )}
 
-          {!showBall && (
+          {challengeState === "focusChallenge" && cameraReady && !showBall && (
+            <div style={focusLayerStyle}>
+              <div style={focusHeaderStyle}>
+                <strong>{getInstructionMessage()}</strong>
+                <span>
+                  Centra la mira sobre cada señal para cargar el escaneo.
+                </span>
+
+                <div style={focusProgressContainerStyle}>
+                  <div
+                    style={{
+                      ...focusProgressFillStyle,
+                      width: `${focusProgress}%`,
+                    }}
+                  />
+                </div>
+              </div>
+
+              {focusTargets.map((targetPoint, index) => (
+                <div
+                  key={`${targetPoint.x}-${targetPoint.y}`}
+                  style={{
+                    ...focusTargetStyle,
+                    left: `${targetPoint.x}%`,
+                    top: `${targetPoint.y}%`,
+                    opacity: index === focusIndex ? 1 : 0.22,
+                    transform:
+                      index === focusIndex
+                        ? "translate(-50%, -50%) scale(1)"
+                        : "translate(-50%, -50%) scale(0.74)",
+                  }}
+                >
+                  {index < focusIndex ? "✓" : index + 1}
+                </div>
+              ))}
+
+              <div
+                style={{
+                  ...focusReticleStyle,
+                  left: `${focusPosition.x}%`,
+                  top: `${focusPosition.y}%`,
+                  borderColor: isInsideFocusTarget ? "#2cff8f" : "#ffffff",
+                  boxShadow: isInsideFocusTarget
+                    ? "0 0 24px rgba(44,255,143,0.9)"
+                    : "0 0 18px rgba(255,255,255,0.42)",
+                }}
+              >
+                <span style={focusReticleDotStyle} />
+              </div>
+            </div>
+          )}
+
+          {!showBall && challengeState !== "focusChallenge" && (
             <div style={debugCardStyle}>
-              <strong style={{ fontSize: 18 }}>{getInstructionMessage()}</strong>
+              <strong style={{ fontSize: 18 }}>
+                {getInstructionMessage()}
+              </strong>
 
               <div
                 style={{
@@ -1304,7 +1583,9 @@ export default function CompatibleARDemo() {
 
           {showBall && (
             <div style={miniCardStyle}>
-              <strong style={{ fontSize: 17 }}>{getInstructionMessage()}</strong>
+              <strong style={{ fontSize: 17 }}>
+                {getInstructionMessage()}
+              </strong>
 
               <p style={{ margin: "6px 0 0", fontSize: 12, opacity: 0.85 }}>
                 Usa dos dedos para acercarla. Cuando desborde la pantalla, se
@@ -1325,7 +1606,7 @@ export default function CompatibleARDemo() {
                   style={{
                     width: `${Math.min(
                       100,
-                      (ballScale / COLLECTION_SCALE) * 100
+                      (ballScale / COLLECTION_SCALE) * 100,
                     )}%`,
                     height: "100%",
                     background: canZoomPrize ? "#2cff8f" : "#ffd24a",
@@ -1340,7 +1621,11 @@ export default function CompatibleARDemo() {
           {controlMode === "manual" && cameraReady && !showBall && (
             <div style={manualControlsWrapperStyle}>
               <button
-                onClick={() => moveManual(-8, 0)}
+                onClick={() =>
+                  challengeState === "focusChallenge"
+                    ? moveFocusManual(-7, 0)
+                    : moveManual(-8, 0)
+                }
                 style={manualButtonStyle}
               >
                 ← H
@@ -1348,14 +1633,22 @@ export default function CompatibleARDemo() {
 
               <div style={{ display: "grid", gap: 8 }}>
                 <button
-                  onClick={() => moveManual(0, -5)}
+                  onClick={() =>
+                    challengeState === "focusChallenge"
+                      ? moveFocusManual(0, -7)
+                      : moveManual(0, -5)
+                  }
                   style={manualButtonStyle}
                 >
                   ↑ V
                 </button>
 
                 <button
-                  onClick={() => moveManual(0, 5)}
+                  onClick={() =>
+                    challengeState === "focusChallenge"
+                      ? moveFocusManual(0, 7)
+                      : moveManual(0, 5)
+                  }
                   style={manualButtonStyle}
                 >
                   ↓ V
@@ -1363,7 +1656,11 @@ export default function CompatibleARDemo() {
               </div>
 
               <button
-                onClick={() => moveManual(8, 0)}
+                onClick={() =>
+                  challengeState === "focusChallenge"
+                    ? moveFocusManual(7, 0)
+                    : moveManual(8, 0)
+                }
                 style={manualButtonStyle}
               >
                 H →
@@ -1371,20 +1668,12 @@ export default function CompatibleARDemo() {
             </div>
           )}
 
-          {challengeState === "holding" && cameraReady && !showBall && (
-            <div style={bottomPillStyle}>Mantén la dirección...</div>
+          {challengeState === "focusChallenge" && cameraReady && !showBall && (
+            <div style={bottomPillStyle}>Completa el escaneo de enfoque</div>
           )}
 
           {challengeState === "found" && cameraReady && (
             <div style={bottomPillStyle}>Premio apareciendo a distancia...</div>
-          )}
-
-          {challengeState === "searching" && cameraReady && !showBall && (
-            <div style={bottomPillStyle}>
-              {controlMode === "manual"
-                ? "Usa los controles para apuntar al premio"
-                : "Apunta hacia la dirección del premio"}
-            </div>
           )}
         </>
       )}
@@ -1400,8 +1689,7 @@ const primaryButtonStyle: CSSProperties = {
   fontWeight: 900,
   fontSize: 16,
   color: "#111",
-  background:
-    "linear-gradient(135deg, #ffdd55 0%, #ffb02e 45%, #ff7a00 100%)",
+  background: "linear-gradient(135deg, #ffdd55 0%, #ffb02e 45%, #ff7a00 100%)",
   boxShadow: "0 12px 28px rgba(255, 157, 0, 0.35)",
 };
 
@@ -1472,6 +1760,108 @@ const miniCardStyle: CSSProperties = {
   borderRadius: 999,
   padding: "12px 18px",
   boxShadow: "0 8px 24px rgba(0,0,0,0.28)",
+};
+
+const approachStatusStyle: CSSProperties = {
+  marginTop: 14,
+  padding: 12,
+  borderRadius: 16,
+  background: "rgba(255,255,255,0.08)",
+  border: "1px solid rgba(255,255,255,0.10)",
+};
+
+const approachBarStyle: CSSProperties = {
+  width: "100%",
+  height: 10,
+  borderRadius: 999,
+  overflow: "hidden",
+  marginTop: 10,
+  background: "rgba(255,255,255,0.16)",
+};
+
+const approachBarFillStyle: CSSProperties = {
+  height: "100%",
+  borderRadius: 999,
+  background: "linear-gradient(90deg, #ff7a00 0%, #ffdd55 55%, #2cff8f 100%)",
+  transition: "width 300ms ease",
+};
+
+const focusLayerStyle: CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 4,
+  pointerEvents: "none",
+};
+
+const focusHeaderStyle: CSSProperties = {
+  position: "fixed",
+  top: 18,
+  left: 18,
+  right: 18,
+  zIndex: 5,
+  color: "white",
+  textAlign: "center",
+  background: "rgba(0,0,0,0.62)",
+  backdropFilter: "blur(8px)",
+  borderRadius: 24,
+  padding: "14px 18px",
+  boxShadow: "0 8px 24px rgba(0,0,0,0.32)",
+  display: "grid",
+  gap: 6,
+};
+
+const focusProgressContainerStyle: CSSProperties = {
+  width: "100%",
+  height: 9,
+  background: "rgba(255,255,255,0.18)",
+  borderRadius: 999,
+  overflow: "hidden",
+  marginTop: 6,
+};
+
+const focusProgressFillStyle: CSSProperties = {
+  height: "100%",
+  borderRadius: 999,
+  background: "#2cff8f",
+  transition: "width 90ms linear",
+};
+
+const focusTargetStyle: CSSProperties = {
+  position: "fixed",
+  width: 76,
+  height: 76,
+  borderRadius: "50%",
+  border: "4px solid rgba(255,210,74,0.95)",
+  background: "rgba(255,210,74,0.18)",
+  color: "white",
+  fontWeight: 950,
+  fontSize: 24,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  textShadow: "0 2px 8px rgba(0,0,0,0.55)",
+  boxShadow: "0 0 24px rgba(255,210,74,0.62)",
+  transition: "opacity 180ms ease, transform 180ms ease",
+};
+
+const focusReticleStyle: CSSProperties = {
+  position: "fixed",
+  width: 54,
+  height: 54,
+  borderRadius: "50%",
+  border: "3px solid white",
+  transform: "translate(-50%, -50%)",
+  display: "flex",
+  justifyContent: "center",
+  alignItems: "center",
+  transition: "left 80ms linear, top 80ms linear, border-color 120ms ease",
+};
+
+const focusReticleDotStyle: CSSProperties = {
+  width: 10,
+  height: 10,
+  borderRadius: "50%",
+  background: "white",
 };
 
 const progressContainerStyle: CSSProperties = {
