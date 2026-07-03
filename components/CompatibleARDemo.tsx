@@ -547,7 +547,9 @@ export default function CompatibleARDemo() {
     }
 
     if (horizontalDiff > horizontalTargetRange) {
-      return controlMode === "manual" ? "↔️ Ajusta horizontal" : "↔️ Gira a los lados";
+      return controlMode === "manual"
+        ? "↔️ Ajusta horizontal"
+        : "↔️ Gira a los lados";
     }
 
     if (verticalDiff > verticalTargetRange) {
@@ -730,18 +732,13 @@ export default function CompatibleARDemo() {
                 {shouldUseGammaForHorizontal ? "gamma" : "alpha"}
               </p>
 
-              {(challengeState === "holding" ||
-                challengeState === "found" ||
-                challengeState === "catchEnabled") && (
+              {challengeState === "holding" && (
                 <div style={progressContainerStyle}>
                   <div
                     style={{
                       width: `${holdProgress}%`,
                       height: "100%",
-                      background:
-                        challengeState === "catchEnabled"
-                          ? "#2cff8f"
-                          : "#ffd24a",
+                      background: "#ffd24a",
                       transition: "width 120ms linear",
                     }}
                   />
@@ -757,6 +754,25 @@ export default function CompatibleARDemo() {
               <p style={{ margin: "6px 0 0", fontSize: 12, opacity: 0.85 }}>
                 Arrastra la pelota con un dedo. Usa dos dedos para hacer zoom.
               </p>
+
+              <div
+                style={{
+                  width: "100%",
+                  height: 8,
+                  background: "rgba(255,255,255,0.18)",
+                  borderRadius: 999,
+                  overflow: "hidden",
+                  marginTop: 10,
+                }}
+              >
+                <div
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    background: canCapturePrize ? "#2cff8f" : "#ffd24a",
+                  }}
+                />
+              </div>
             </div>
           )}
 
