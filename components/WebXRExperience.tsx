@@ -1,7 +1,7 @@
 "use client";
 
 import { Canvas, useFrame } from "@react-three/fiber";
-import { XR, createXRStore } from "@react-three/xr";
+import { XR, createXRStore, IfInSessionMode } from "@react-three/xr";
 import { useGLTF } from "@react-three/drei";
 import { useEffect, useMemo, useState } from "react";
 
@@ -20,6 +20,7 @@ export default function WebXRExperience() {
 
   const [supported, setSupported] = useState(false);
   const [checking, setChecking] = useState(true);
+  const [message, setMessage] = useState("");
 
   useEffect(() => {
     async function checkXR() {
@@ -31,7 +32,7 @@ export default function WebXRExperience() {
 
         setSupported(Boolean(ok));
       } catch (err) {
-        console.error("Error validando WebXR:", err);
+        setMessage("Error validando WebXR: " + String(err));
         setSupported(false);
       } finally {
         setChecking(false);
@@ -42,11 +43,13 @@ export default function WebXRExperience() {
   }, []);
 
   const startAR = async () => {
+    setMessage("Intentando iniciar AR...");
+
     try {
       await store.enterAR();
+      setMessage("AR iniciado.");
     } catch (err) {
-      console.error("Error al iniciar AR:", err);
-      alert("No se pudo iniciar AR: " + String(err));
+      setMessage("No se pudo iniciar AR: " + String(err));
     }
   };
 
@@ -68,22 +71,18 @@ export default function WebXRExperience() {
         {checking && <p>Validando compatibilidad...</p>}
 
         {!checking && supported && (
-          <>
-            <p>Abre esta experiencia en Android con Google Chrome.</p>
-
-            <button
-              onClick={startAR}
-              style={{
-                padding: "14px 24px",
-                borderRadius: 999,
-                border: "none",
-                fontWeight: 700,
-                fontSize: 16,
-              }}
-            >
-              Iniciar experiencia AR
-            </button>
-          </>
+          <button
+            onClick={startAR}
+            style={{
+              padding: "14px 24px",
+              borderRadius: 999,
+              border: "none",
+              fontWeight: 700,
+              fontSize: 16,
+            }}
+          >
+            Iniciar experiencia AR
+          </button>
         )}
 
         {!checking && !supported && (
@@ -92,13 +91,18 @@ export default function WebXRExperience() {
             Android compatible con ARCore.
           </p>
         )}
+
+        {message && <p>{message}</p>}
       </div>
 
       <Canvas camera={{ position: [0, 1.4, 3], fov: 70 }}>
         <XR store={store}>
           <ambientLight intensity={1.5} />
           <directionalLight position={[5, 5, 5]} intensity={2} />
-          <Ball />
+
+          <IfInSessionMode allow={["immersive-ar"]}>
+            <Ball />
+          </IfInSessionMode>
         </XR>
       </Canvas>
     </main>
