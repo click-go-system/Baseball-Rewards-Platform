@@ -5,9 +5,11 @@ import { useGLTF } from "@react-three/drei";
 import { useEffect, useRef, useState } from "react";
 
 type OrientationState = {
-  alpha: number;
-  beta: number;
-  gamma: number;
+  alpha: number | null;
+  beta: number | null;
+  gamma: number | null;
+  absolute: boolean;
+  source: string;
 };
 
 type TargetState = {
@@ -32,7 +34,7 @@ function BallModel({ visible }: { visible: boolean }) {
   const { scene } = useGLTF("/models/ball.glb");
 
   useFrame(() => {
-    scene.rotation.y += 0.015;
+    scene.rotation.y += 0.018;
   });
 
   if (!visible) return null;
@@ -50,66 +52,69 @@ export default function CompatibleARDemo() {
   const [stream, setStream] = useState<MediaStream | null>(null);
 
   const [orientation, setOrientation] = useState<OrientationState>({
-    alpha: 0,
-    beta: 0,
-    gamma: 0,
+    alpha: null,
+    beta: null,
+    gamma: null,
+    absolute: false,
+    source: "sin datos",
   });
 
   const [target, setTarget] = useState<TargetState>({
     alpha: 40,
-    beta: 60,
+    beta: 70,
   });
 
-  const currentAlpha = normalizeAngle(orientation.alpha || 0);
-
   /**
-   * beta normalmente se mueve cuando inclinas el teléfono arriba/abajo.
-   * En muchos celulares:
-   * - cerca de 90 = teléfono vertical/frente
-   * - menor = apuntando más hacia arriba/abajo dependiendo orientación
+   * Estados del reto:
+   * searching = buscando objetivo
+   * holding = ya está en rango, debe sostener 3 segundos
+   * found = objetivo confirmado, aparece pelota
+   * catchEnabled = ya puede capturar
    */
-  const currentBeta = orientation.beta || 0;
+  const [challengeState, setChallengeState] = useState<
+    "searching" | "holding" | "found" | "catchEnabled"
+  >("searching");
+
+  const [holdProgress, setHoldProgress] = useState(0);
+  const holdStartRef = useRef<number | null>(null);
+  const foundTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const hasOrientation = orientation.alpha !== null && orientation.beta !== null;
+
+  const currentAlpha = hasOrientation
+    ? normalizeAngle(orientation.alpha ?? 0)
+    : 0;
+
+  const currentBeta = hasOrientation ? orientation.beta ?? 0 : 0;
 
   const alphaDiff = angleDifference(currentAlpha, target.alpha);
   const betaDiff = Math.abs(currentBeta - target.beta);
 
   /**
-   * Rango horizontal.
-   * Menor número = más difícil.
+   * Rango para considerar que ya llegó al objetivo.
+   * Para demo lo dejamos alcanzable.
    */
-  const alphaDetectionRange = 45;
-  const alphaCaptureRange = 25;
+  const alphaTargetRange = 28;
+  const betaTargetRange = 16;
 
-  /**
-   * Rango vertical.
-   * Menor número = más difícil.
-   */
-  const betaDetectionRange = 25;
-  const betaCaptureRange = 14;
+  const isInsideTarget =
+    hasOrientation && alphaDiff <= alphaTargetRange && betaDiff <= betaTargetRange;
 
-  const isLookingAtPrize =
-    alphaDiff <= alphaDetectionRange && betaDiff <= betaDetectionRange;
+  const showBall =
+    challengeState === "found" || challengeState === "catchEnabled";
 
-  const canCapturePrize =
-    alphaDiff <= alphaCaptureRange && betaDiff <= betaCaptureRange;
+  const canCapturePrize = challengeState === "catchEnabled";
 
   function generateNewTarget() {
-    /**
-     * Generamos una dirección aleatoria horizontal.
-     * 0 a 360 grados.
-     */
     const randomAlpha = randomBetween(0, 360);
 
     /**
-     * Generamos una inclinación vertical aleatoria.
-     * Ajusta estos valores si quieres que aparezca más arriba o más abajo.
-     *
-     * 35 a 105 suele ser buen rango para demo:
-     * - 35/50: hay que apuntar más arriba
-     * - 70/90: al frente
-     * - 95/105: más abajo
+     * Rango vertical:
+     * 40 = apuntar más hacia arriba
+     * 70 = frente natural
+     * 100 = apuntar más hacia abajo
      */
-    const randomBeta = randomBetween(35, 105);
+    const randomBeta = randomBetween(40, 100);
 
     setTarget({
       alpha: randomAlpha,
@@ -145,6 +150,14 @@ export default function CompatibleARDemo() {
 
   async function startExperience() {
     setError("");
+    setChallengeState("searching");
+    setHoldProgress(0);
+    holdStartRef.current = null;
+
+    if (foundTimeoutRef.current) {
+      clearTimeout(foundTimeoutRef.current);
+      foundTimeoutRef.current = null;
+    }
 
     try {
       const orientationAllowed = await requestOrientationPermission();
@@ -188,20 +201,115 @@ export default function CompatibleARDemo() {
   }, [stream, started]);
 
   useEffect(() => {
+    function getHeading(event: DeviceOrientationEvent) {
+      const webkitHeading = (
+        event as DeviceOrientationEvent & {
+          webkitCompassHeading?: number;
+        }
+      ).webkitCompassHeading;
+
+      if (typeof webkitHeading === "number") {
+        return webkitHeading;
+      }
+
+      if (typeof event.alpha === "number") {
+        return event.alpha;
+      }
+
+      return null;
+    }
+
     function handleOrientation(event: DeviceOrientationEvent) {
+      const heading = getHeading(event);
+
       setOrientation({
-        alpha: event.alpha ?? 0,
-        beta: event.beta ?? 0,
-        gamma: event.gamma ?? 0,
+        alpha: heading,
+        beta: typeof event.beta === "number" ? event.beta : null,
+        gamma: typeof event.gamma === "number" ? event.gamma : null,
+        absolute: Boolean(event.absolute),
+        source: "deviceorientation",
+      });
+    }
+
+    function handleOrientationAbsolute(event: DeviceOrientationEvent) {
+      const heading = getHeading(event);
+
+      setOrientation({
+        alpha: heading,
+        beta: typeof event.beta === "number" ? event.beta : null,
+        gamma: typeof event.gamma === "number" ? event.gamma : null,
+        absolute: Boolean(event.absolute),
+        source: "deviceorientationabsolute",
       });
     }
 
     window.addEventListener("deviceorientation", handleOrientation, true);
+    window.addEventListener(
+      "deviceorientationabsolute",
+      handleOrientationAbsolute,
+      true
+    );
 
     return () => {
       window.removeEventListener("deviceorientation", handleOrientation, true);
+      window.removeEventListener(
+        "deviceorientationabsolute",
+        handleOrientationAbsolute,
+        true
+      );
     };
   }, []);
+
+  /**
+   * Lógica de sostener el teléfono 3 segundos en el objetivo.
+   */
+  useEffect(() => {
+    if (!started || !cameraReady) return;
+    if (challengeState === "found" || challengeState === "catchEnabled") return;
+
+    let animationFrameId: number;
+
+    function updateHold() {
+      if (isInsideTarget) {
+        if (holdStartRef.current === null) {
+          holdStartRef.current = Date.now();
+          setChallengeState("holding");
+        }
+
+        const elapsed = Date.now() - holdStartRef.current;
+        const progress = Math.min((elapsed / 3000) * 100, 100);
+
+        setHoldProgress(progress);
+
+        if (elapsed >= 3000) {
+          setChallengeState("found");
+          setHoldProgress(100);
+
+          if (foundTimeoutRef.current) {
+            clearTimeout(foundTimeoutRef.current);
+          }
+
+          foundTimeoutRef.current = setTimeout(() => {
+            setChallengeState("catchEnabled");
+          }, 2000);
+
+          return;
+        }
+      } else {
+        holdStartRef.current = null;
+        setHoldProgress(0);
+        setChallengeState("searching");
+      }
+
+      animationFrameId = requestAnimationFrame(updateHold);
+    }
+
+    animationFrameId = requestAnimationFrame(updateHold);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+    };
+  }, [started, cameraReady, isInsideTarget, challengeState]);
 
   function stopCamera() {
     if (stream) {
@@ -214,10 +322,51 @@ export default function CompatibleARDemo() {
 
   function resetDemo() {
     stopCamera();
+
+    if (foundTimeoutRef.current) {
+      clearTimeout(foundTimeoutRef.current);
+      foundTimeoutRef.current = null;
+    }
+
     setCaptured(false);
     setStarted(false);
     setError("");
+    setChallengeState("searching");
+    setHoldProgress(0);
+    holdStartRef.current = null;
     generateNewTarget();
+  }
+
+  function getInstructionMessage() {
+    if (!hasOrientation) {
+      return "⏳ Esperando sensores del celular...";
+    }
+
+    if (challengeState === "holding") {
+      return "✅ Mantén el celular en esta posición";
+    }
+
+    if (challengeState === "found") {
+      return "⚾ Premio encontrado";
+    }
+
+    if (challengeState === "catchEnabled") {
+      return "🎯 Premio listo para capturar";
+    }
+
+    if (alphaDiff > alphaTargetRange && betaDiff > betaTargetRange) {
+      return "🔎 Muévete a los lados y arriba/abajo";
+    }
+
+    if (alphaDiff > alphaTargetRange) {
+      return "↔️ Gira a los lados para encontrar el premio";
+    }
+
+    if (betaDiff > betaTargetRange) {
+      return "↕️ Inclina el celular arriba o abajo";
+    }
+
+    return "🔎 Busca el premio";
   }
 
   if (captured) {
@@ -281,9 +430,8 @@ export default function CompatibleARDemo() {
           <h1>Baseball Rewards AR</h1>
 
           <p style={{ maxWidth: 420 }}>
-            Esta demo funciona en navegador usando cámara y movimiento del
-            celular. El premio aparecerá en una dirección aleatoria. Mueve tu
-            teléfono hacia los lados, arriba o abajo para encontrarlo.
+            Mueve tu teléfono hasta llegar al objetivo. Cuando llegues, mantén
+            esa posición durante 3 segundos para revelar el premio.
           </p>
 
           <button
@@ -337,7 +485,7 @@ export default function CompatibleARDemo() {
               >
                 <ambientLight intensity={1.5} />
                 <directionalLight position={[5, 5, 5]} intensity={2} />
-                <BallModel visible={isLookingAtPrize} />
+                <BallModel visible={showBall} />
               </Canvas>
             </div>
           )}
@@ -345,45 +493,137 @@ export default function CompatibleARDemo() {
           <div
             style={{
               position: "fixed",
-              top: 20,
-              left: 20,
-              right: 20,
+              top: 16,
+              left: 14,
+              right: 14,
               zIndex: 4,
               color: "white",
               textAlign: "center",
-              background: "rgba(0,0,0,0.55)",
-              borderRadius: 16,
-              padding: 14,
+              background: "rgba(0,0,0,0.68)",
+              borderRadius: 18,
+              padding: 16,
+              boxShadow: "0 8px 30px rgba(0,0,0,0.35)",
             }}
           >
-            <strong>
-              {canCapturePrize
-                ? "🎯 Premio centrado"
-                : isLookingAtPrize
-                ? "⚾ Premio cerca, alinéate un poco más"
-                : "🔎 Busca el premio moviendo el celular"}
-            </strong>
+            <strong style={{ fontSize: 18 }}>{getInstructionMessage()}</strong>
 
-            <p style={{ margin: "8px 0 0" }}>
-              Horizontal: {Math.round(alphaDiff)}° / Vertical:{" "}
-              {Math.round(betaDiff)}°
-            </p>
+            <div
+              style={{
+                marginTop: 12,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 10,
+              }}
+            >
+              <div
+                style={{
+                  background: "rgba(255,255,255,0.1)",
+                  borderRadius: 14,
+                  padding: 12,
+                }}
+              >
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  Objetivo horizontal
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 800 }}>
+                  {Math.round(target.alpha)}°
+                </div>
+              </div>
 
-            <p style={{ margin: "4px 0 0", opacity: 0.8 }}>
-              Mueve el celular a los lados, arriba o abajo.
-            </p>
+              <div
+                style={{
+                  background: "rgba(255,255,255,0.1)",
+                  borderRadius: 14,
+                  padding: 12,
+                }}
+              >
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  Objetivo vertical
+                </div>
+                <div style={{ fontSize: 28, fontWeight: 800 }}>
+                  {Math.round(target.beta)}°
+                </div>
+              </div>
+            </div>
 
-            <p style={{ margin: "4px 0 0", opacity: 0.55, fontSize: 12 }}>
-              Debug objetivo: H {Math.round(target.alpha)}° / V{" "}
-              {Math.round(target.beta)}°
-            </p>
+            {hasOrientation ? (
+              <>
+                <div
+                  style={{
+                    marginTop: 10,
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: 10,
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>
+                      Actual H
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 700 }}>
+                      {Math.round(currentAlpha)}°
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: 11, opacity: 0.7 }}>
+                      Actual V
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 700 }}>
+                      {Math.round(currentBeta)}°
+                    </div>
+                  </div>
+                </div>
+
+                <p style={{ margin: "8px 0 0", fontSize: 13, opacity: 0.85 }}>
+                  Diferencia H: {Math.round(alphaDiff)}° / V:{" "}
+                  {Math.round(betaDiff)}°
+                </p>
+
+                <p style={{ margin: "4px 0 0", opacity: 0.55, fontSize: 11 }}>
+                  Sensor: {orientation.source} / Absolute:{" "}
+                  {orientation.absolute ? "sí" : "no"}
+                </p>
+              </>
+            ) : (
+              <p style={{ margin: "10px 0 0", color: "#ffdf8a" }}>
+                Esperando datos del sensor de movimiento...
+              </p>
+            )}
+
+            {(challengeState === "holding" ||
+              challengeState === "found" ||
+              challengeState === "catchEnabled") && (
+              <div
+                style={{
+                  width: "100%",
+                  height: 12,
+                  background: "rgba(255,255,255,0.18)",
+                  borderRadius: 999,
+                  overflow: "hidden",
+                  marginTop: 12,
+                }}
+              >
+                <div
+                  style={{
+                    width: `${holdProgress}%`,
+                    height: "100%",
+                    background:
+                      challengeState === "catchEnabled"
+                        ? "#2cff8f"
+                        : "#ffd24a",
+                    transition: "width 120ms linear",
+                  }}
+                />
+              </div>
+            )}
           </div>
 
           {error && (
             <div
               style={{
                 position: "fixed",
-                top: 140,
+                top: 210,
                 left: 20,
                 right: 20,
                 zIndex: 6,
@@ -395,6 +635,44 @@ export default function CompatibleARDemo() {
               }}
             >
               {error}
+            </div>
+          )}
+
+          {challengeState === "holding" && cameraReady && (
+            <div
+              style={{
+                position: "fixed",
+                zIndex: 5,
+                bottom: 30,
+                left: "50%",
+                transform: "translateX(-50%)",
+                color: "white",
+                background: "rgba(0,0,0,0.72)",
+                padding: "12px 18px",
+                borderRadius: 999,
+                fontWeight: 700,
+              }}
+            >
+              Mantén 3 segundos...
+            </div>
+          )}
+
+          {challengeState === "found" && cameraReady && (
+            <div
+              style={{
+                position: "fixed",
+                zIndex: 5,
+                bottom: 30,
+                left: "50%",
+                transform: "translateX(-50%)",
+                color: "white",
+                background: "rgba(0,0,0,0.72)",
+                padding: "12px 18px",
+                borderRadius: 999,
+                fontWeight: 700,
+              }}
+            >
+              Premio revelado...
             </div>
           )}
 
@@ -413,7 +691,7 @@ export default function CompatibleARDemo() {
                 padding: "14px 24px",
                 borderRadius: 999,
                 border: "none",
-                fontWeight: 700,
+                fontWeight: 800,
                 fontSize: 16,
               }}
             >
@@ -421,7 +699,7 @@ export default function CompatibleARDemo() {
             </button>
           )}
 
-          {!canCapturePrize && isLookingAtPrize && cameraReady && (
+          {challengeState === "searching" && cameraReady && (
             <div
               style={{
                 position: "fixed",
@@ -430,32 +708,14 @@ export default function CompatibleARDemo() {
                 left: "50%",
                 transform: "translateX(-50%)",
                 color: "white",
-                background: "rgba(0,0,0,0.65)",
+                background: "rgba(0,0,0,0.72)",
                 padding: "12px 18px",
                 borderRadius: 999,
-                fontWeight: 600,
+                fontWeight: 700,
+                whiteSpace: "nowrap",
               }}
             >
-              Ya casi, centra el premio
-            </div>
-          )}
-
-          {!isLookingAtPrize && cameraReady && (
-            <div
-              style={{
-                position: "fixed",
-                zIndex: 5,
-                bottom: 30,
-                left: "50%",
-                transform: "translateX(-50%)",
-                color: "white",
-                background: "rgba(0,0,0,0.65)",
-                padding: "12px 18px",
-                borderRadius: 999,
-                fontWeight: 600,
-              }}
-            >
-              Sigue buscando
+              Busca el ángulo objetivo
             </div>
           )}
         </>
