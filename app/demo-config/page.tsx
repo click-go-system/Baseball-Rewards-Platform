@@ -18,6 +18,7 @@ type SearchResult = {
   lon: string;
   type?: string;
   category?: string;
+  importance?: number;
 };
 
 const CONFIG_STORAGE_KEY = "baseballArDemoConfig";
@@ -63,12 +64,17 @@ function loadConfigFromStorage(): DemoConfig {
   }
 }
 
+function shortPlaceName(displayName: string) {
+  return displayName.split(",").slice(0, 2).join(",");
+}
+
 export default function DemoConfigPage() {
   const mapDivRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
   const circleRef = useRef<any>(null);
   const leafletRef = useRef<any>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
 
   const [config, setConfig] = useState<DemoConfig>(defaultConfig);
   const [saved, setSaved] = useState(false);
@@ -109,8 +115,11 @@ export default function DemoConfigPage() {
           touchZoom: true,
         });
 
-        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          subdomains: ["a", "b", "c"],
           maxZoom: 19,
+          detectRetina: true,
+          crossOrigin: true,
           attribution:
             '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
         }).addTo(map);
@@ -149,9 +158,14 @@ export default function DemoConfigPage() {
         circleRef.current = circle;
         setMapReady(true);
 
+        requestAnimationFrame(() => {
+          map.invalidateSize();
+          map.setView(initialLatLng, 17, { animate: false });
+        });
+
         setTimeout(() => {
           map.invalidateSize();
-        }, 250);
+        }, 500);
       } catch (err) {
         console.error(err);
         setError("No se pudo cargar el mapa. Revisa que Leaflet esté instalado.");
@@ -162,6 +176,7 @@ export default function DemoConfigPage() {
 
     return () => {
       cancelled = true;
+      searchAbortRef.current?.abort();
 
       if (mapRef.current) {
         mapRef.current.remove();
@@ -176,6 +191,26 @@ export default function DemoConfigPage() {
     if (!circleRef.current) return;
     circleRef.current.setRadius(config.activationRadiusMeters);
   }, [config.activationRadiusMeters]);
+
+  useEffect(() => {
+    const query = searchText.trim();
+
+    if (query.length < 3) {
+      searchAbortRef.current?.abort();
+      setSearching(false);
+      setSearchResults([]);
+      setSelectedResultId(null);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      searchPlaces(query, true);
+    }, 650);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [searchText]);
 
   function updatePrizePosition(
     latitude: number,
@@ -217,31 +252,46 @@ export default function DemoConfigPage() {
 
       setTimeout(() => {
         mapRef.current?.invalidateSize();
-      }, 200);
+      }, 150);
     }
   }
 
-  async function searchPlaces() {
-    const query = searchText.trim();
+  async function searchPlaces(forcedQuery?: string, autocomplete = false) {
+    const query = (forcedQuery ?? searchText).trim();
 
     if (!query) {
       setError("Escribe un lugar para buscar.");
       return;
     }
 
+    if (query.length < 3) {
+      setSearchResults([]);
+      return;
+    }
+
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     setSearching(true);
     setError("");
     setSaved(false);
-    setSelectedResultId(null);
+
+    if (!autocomplete) {
+      setSelectedResultId(null);
+    }
 
     try {
       const searchUrl = new URL("https://nominatim.openstreetmap.org/search");
       searchUrl.searchParams.set("format", "jsonv2");
       searchUrl.searchParams.set("q", query);
-      searchUrl.searchParams.set("limit", "5");
+      searchUrl.searchParams.set("limit", "7");
       searchUrl.searchParams.set("addressdetails", "1");
+      searchUrl.searchParams.set("accept-language", "es");
+      searchUrl.searchParams.set("countrycodes", "mx");
 
       const response = await fetch(searchUrl.toString(), {
+        signal: controller.signal,
         headers: {
           Accept: "application/json",
         },
@@ -255,23 +305,34 @@ export default function DemoConfigPage() {
       setSearchResults(results);
 
       if (results.length === 0) {
-        setError("No encontramos ese lugar. Intenta con una búsqueda más específica.");
+        if (!autocomplete) {
+          setError("No encontramos ese lugar. Intenta con una búsqueda más específica.");
+        }
         return;
       }
 
-      const firstResult = results[0];
-      setSelectedResultId(firstResult.place_id);
-      updatePrizePosition(Number(firstResult.lat), Number(firstResult.lon), true, 16);
-    } catch (err) {
+      if (!autocomplete) {
+        const firstResult = results[0];
+        setSelectedResultId(firstResult.place_id);
+        updatePrizePosition(Number(firstResult.lat), Number(firstResult.lon), true, 16);
+      }
+    } catch (err: any) {
+      if (err?.name === "AbortError") return;
       console.error(err);
-      setError("No se pudo buscar el lugar. Intenta de nuevo.");
+      if (!autocomplete) {
+        setError("No se pudo buscar el lugar. Intenta de nuevo.");
+      }
     } finally {
-      setSearching(false);
+      if (searchAbortRef.current === controller) {
+        setSearching(false);
+      }
     }
   }
 
   function selectSearchResult(result: SearchResult) {
     setSelectedResultId(result.place_id);
+    setSearchText(shortPlaceName(result.display_name));
+    setSearchResults([]);
     updatePrizePosition(Number(result.lat), Number(result.lon), true, 17);
   }
 
@@ -326,6 +387,12 @@ export default function DemoConfigPage() {
           touch-action: pan-x pan-y;
           background: #111;
           font-family: inherit;
+          z-index: 0;
+        }
+
+        .leaflet-container img {
+          max-width: none !important;
+          max-height: none !important;
         }
 
         .leaflet-pane,
@@ -343,6 +410,26 @@ export default function DemoConfigPage() {
           top: 0;
         }
 
+        .leaflet-pane { z-index: 400; }
+        .leaflet-tile-pane { z-index: 200; }
+        .leaflet-overlay-pane { z-index: 400; }
+        .leaflet-shadow-pane { z-index: 500; }
+        .leaflet-marker-pane { z-index: 600; }
+        .leaflet-tooltip-pane { z-index: 650; }
+        .leaflet-popup-pane { z-index: 700; }
+
+        .leaflet-tile {
+          width: 256px;
+          height: 256px;
+          filter: none !important;
+          visibility: inherit;
+          border: 0;
+        }
+
+        .leaflet-tile-loaded {
+          opacity: 1;
+        }
+
         .leaflet-tile,
         .leaflet-marker-icon,
         .leaflet-marker-shadow {
@@ -357,21 +444,10 @@ export default function DemoConfigPage() {
           pointer-events: none;
         }
 
-        .leaflet-control-container .leaflet-top {
-          top: 10px;
-        }
-
-        .leaflet-control-container .leaflet-right {
-          right: 10px;
-        }
-
-        .leaflet-control-container .leaflet-bottom {
-          bottom: 10px;
-        }
-
-        .leaflet-control-container .leaflet-left {
-          left: 10px;
-        }
+        .leaflet-control-container .leaflet-top { top: 10px; }
+        .leaflet-control-container .leaflet-right { right: 10px; }
+        .leaflet-control-container .leaflet-bottom { bottom: 10px; }
+        .leaflet-control-container .leaflet-left { left: 10px; }
 
         .leaflet-control {
           float: left;
@@ -432,6 +508,12 @@ export default function DemoConfigPage() {
           box-shadow: 0 8px 20px rgba(0,0,0,0.35);
           border: 3px solid rgba(255,255,255,0.95);
         }
+
+        @media (max-width: 560px) {
+          .demo-search-row {
+            grid-template-columns: 1fr !important;
+          }
+        }
       `}</style>
 
       <section style={cardStyle}>
@@ -453,14 +535,14 @@ export default function DemoConfigPage() {
 
         <div style={searchPanelStyle}>
           <label style={labelStyle}>Buscar lugar</label>
-          <div style={searchRowStyle}>
+          <div className="demo-search-row" style={searchRowStyle}>
             <input
               value={searchText}
               onChange={(event) => setSearchText(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  searchPlaces();
+                  searchPlaces(searchText, false);
                 }
               }}
               placeholder="Ej. Estadio Beto Ávila, Veracruz"
@@ -469,13 +551,17 @@ export default function DemoConfigPage() {
 
             <button
               type="button"
-              onClick={searchPlaces}
+              onClick={() => searchPlaces(searchText, false)}
               disabled={searching}
               style={compactButtonStyle}
             >
               {searching ? "Buscando..." : "Buscar"}
             </button>
           </div>
+
+          {searchText.trim().length > 0 && searchText.trim().length < 3 && (
+            <p style={searchHintStyle}>Escribe al menos 3 letras para ver sugerencias.</p>
+          )}
 
           {searchResults.length > 0 && (
             <div style={resultsListStyle}>
@@ -493,7 +579,7 @@ export default function DemoConfigPage() {
                 >
                   <strong style={{ display: "block" }}>
                     {selectedResultId === result.place_id ? "🎯 " : "📍 "}
-                    {result.display_name.split(",")[0]}
+                    {shortPlaceName(result.display_name)}
                   </strong>
                   <span style={{ opacity: 0.72 }}>{result.display_name}</span>
                 </button>
@@ -687,10 +773,16 @@ const compactButtonStyle: CSSProperties = {
   background: "linear-gradient(135deg, #ffdd55, #ff7a00)",
 };
 
+const searchHintStyle: CSSProperties = {
+  margin: 0,
+  fontSize: 12,
+  color: "rgba(255,255,255,0.62)",
+};
+
 const resultsListStyle: CSSProperties = {
   display: "grid",
   gap: 8,
-  maxHeight: 240,
+  maxHeight: 260,
   overflowY: "auto",
   paddingRight: 4,
 };
@@ -715,12 +807,13 @@ const selectedResultButtonStyle: CSSProperties = {
 const mapWrapperStyle: CSSProperties = {
   position: "relative",
   width: "100%",
-  height: "min(62vh, 520px)",
-  minHeight: 330,
+  height: "min(58vh, 500px)",
+  minHeight: 340,
   overflow: "hidden",
   borderRadius: 24,
   border: "1px solid rgba(255,255,255,0.14)",
   background: "#111",
+  isolation: "isolate",
 };
 
 const mapStyle: CSSProperties = {
