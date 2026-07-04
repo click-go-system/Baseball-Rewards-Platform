@@ -11,10 +11,13 @@ type DemoConfig = {
   demoLocal: boolean;
 };
 
-type UserLocation = {
-  latitude: number;
-  longitude: number;
-  accuracy: number | null;
+type SearchResult = {
+  place_id: number;
+  display_name: string;
+  lat: string;
+  lon: string;
+  type?: string;
+  category?: string;
 };
 
 const CONFIG_STORAGE_KEY = "baseballArDemoConfig";
@@ -27,7 +30,7 @@ const defaultConfig: DemoConfig = {
   demoLocal: true,
 };
 
-function loadConfig(): DemoConfig {
+function loadConfigFromStorage(): DemoConfig {
   if (typeof window === "undefined") return defaultConfig;
 
   try {
@@ -60,597 +63,789 @@ function loadConfig(): DemoConfig {
   }
 }
 
-function saveConfig(config: DemoConfig) {
-  window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
-}
-
-function getCurrentLocation(): Promise<UserLocation> {
-  return new Promise((resolve, reject) => {
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      reject(new Error("Tu navegador no soporta geolocalización."));
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        resolve({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-          accuracy: position.coords.accuracy ?? null,
-        });
-      },
-      (error) => reject(error),
-      {
-        enableHighAccuracy: true,
-        timeout: 12000,
-        maximumAge: 2000,
-      }
-    );
-  });
-}
-
-function injectLeafletCss() {
-  if (typeof document === "undefined") return;
-
-  if (!document.querySelector('link[data-leaflet-css="true"]')) {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    link.setAttribute("data-leaflet-css", "true");
-    document.head.appendChild(link);
-  }
-
-  if (document.querySelector('style[data-leaflet-critical-css="true"]')) return;
-
-  const style = document.createElement("style");
-  style.setAttribute("data-leaflet-critical-css", "true");
-  style.textContent = `
-    .leaflet-container {
-      overflow: hidden;
-      position: relative;
-      width: 100%;
-      height: 100%;
-      touch-action: pan-x pan-y;
-      background: #ddd;
-      outline: 0;
-      font-family: Arial, Helvetica, sans-serif;
-    }
-    .leaflet-pane,
-    .leaflet-tile,
-    .leaflet-marker-icon,
-    .leaflet-marker-shadow,
-    .leaflet-tile-container,
-    .leaflet-pane > svg,
-    .leaflet-pane > canvas,
-    .leaflet-zoom-box,
-    .leaflet-image-layer,
-    .leaflet-layer {
-      position: absolute;
-      left: 0;
-      top: 0;
-    }
-    .leaflet-container img {
-      max-width: none !important;
-      max-height: none !important;
-    }
-    .leaflet-tile {
-      width: 256px;
-      height: 256px;
-      user-select: none;
-      -webkit-user-drag: none;
-    }
-    .leaflet-marker-icon {
-      display: block;
-    }
-    .leaflet-control {
-      position: relative;
-      z-index: 800;
-      pointer-events: auto;
-    }
-    .leaflet-top, .leaflet-bottom {
-      position: absolute;
-      z-index: 1000;
-      pointer-events: none;
-    }
-    .leaflet-top { top: 0; }
-    .leaflet-right { right: 0; }
-    .leaflet-bottom { bottom: 0; }
-    .leaflet-left { left: 0; }
-    .leaflet-control-zoom {
-      border: 2px solid rgba(0,0,0,0.2);
-      background: #fff;
-      border-radius: 4px;
-      overflow: hidden;
-      margin-left: 10px;
-      margin-top: 10px;
-    }
-    .leaflet-control-zoom a {
-      display: block;
-      width: 30px;
-      height: 30px;
-      line-height: 30px;
-      text-align: center;
-      text-decoration: none;
-      color: #000;
-      font: bold 18px Arial, Helvetica, sans-serif;
-      background: #fff;
-      border-bottom: 1px solid #ccc;
-    }
-    .leaflet-control-attribution {
-      background: rgba(255,255,255,0.8);
-      padding: 0 5px;
-      font-size: 11px;
-      margin-right: 0;
-      margin-bottom: 0;
-    }
-    .leaflet-interactive {
-      cursor: pointer;
-    }
-  `;
-  document.head.appendChild(style);
-}
-
 export default function DemoConfigPage() {
-  const [config, setConfig] = useState<DemoConfig>(defaultConfig);
-  const [status, setStatus] = useState("");
-  const [loadingGps, setLoadingGps] = useState(false);
-  const [leafletReady, setLeafletReady] = useState(false);
-
   const mapDivRef = useRef<HTMLDivElement | null>(null);
-  const mapInstanceRef = useRef<any>(null);
+  const mapRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
   const circleRef = useRef<any>(null);
   const leafletRef = useRef<any>(null);
 
-  useEffect(() => {
-    const savedConfig = loadConfig();
-    setConfig(savedConfig);
-  }, []);
+  const [config, setConfig] = useState<DemoConfig>(defaultConfig);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+  const [mapReady, setMapReady] = useState(false);
+
+  const [searchText, setSearchText] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [selectedResultId, setSelectedResultId] = useState<number | null>(null);
 
   useEffect(() => {
+    const initialConfig = loadConfigFromStorage();
+    setConfig(initialConfig);
+
     let cancelled = false;
 
     async function setupLeaflet() {
-      if (!mapDivRef.current || mapInstanceRef.current) return;
+      if (!mapDivRef.current || mapRef.current) return;
 
-      injectLeafletCss();
+      try {
+        const L = await import("leaflet");
+        if (cancelled || !mapDivRef.current) return;
 
-      const L = await import("leaflet");
-      if (cancelled || !mapDivRef.current) return;
+        leafletRef.current = L;
 
-      leafletRef.current = L;
+        const initialLatLng: [number, number] = [
+          initialConfig.latitude,
+          initialConfig.longitude,
+        ];
 
-      const initialConfig = loadConfig();
-      const initialLatLng: [number, number] = [
-        initialConfig.latitude,
-        initialConfig.longitude,
-      ];
+        const map = L.map(mapDivRef.current, {
+          center: initialLatLng,
+          zoom: 17,
+          zoomControl: true,
+          scrollWheelZoom: true,
+          dragging: true,
+          touchZoom: true,
+        });
 
-      const map = L.map(mapDivRef.current, {
-        center: initialLatLng,
-        zoom: 17,
-        zoomControl: true,
-        scrollWheelZoom: true,
-        dragging: true,
-        touchZoom: true,
-      });
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19,
+          attribution:
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+        }).addTo(map);
 
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      }).addTo(map);
+        const prizeIcon = L.divIcon({
+          className: "baseball-prize-marker",
+          html: "<div>🎁</div>",
+          iconSize: [42, 42],
+          iconAnchor: [21, 21],
+        });
 
-      const prizeIcon = L.divIcon({
-        className: "",
-        html: `<div style="width:42px;height:42px;border-radius:999px;background:linear-gradient(135deg,#ffdd55,#ff7a00);display:flex;align-items:center;justify-content:center;font-size:23px;box-shadow:0 10px 24px rgba(0,0,0,.35);border:2px solid white;">🎁</div>`,
-        iconSize: [42, 42],
-        iconAnchor: [21, 21],
-      });
+        const marker = L.marker(initialLatLng, {
+          draggable: true,
+          icon: prizeIcon,
+        }).addTo(map);
 
-      const marker = L.marker(initialLatLng, {
-        draggable: true,
-        icon: prizeIcon,
-      }).addTo(map);
+        const circle = L.circle(initialLatLng, {
+          radius: initialConfig.activationRadiusMeters,
+          color: "#ffdd55",
+          fillColor: "#ffdd55",
+          fillOpacity: 0.16,
+          weight: 2,
+        }).addTo(map);
 
-      const circle = L.circle(initialLatLng, {
-        radius: initialConfig.activationRadiusMeters,
-        color: "#ff9f1c",
-        weight: 2,
-        fillColor: "#ffdd55",
-        fillOpacity: 0.16,
-      }).addTo(map);
+        marker.on("dragend", () => {
+          const latLng = marker.getLatLng();
+          updatePrizePosition(latLng.lat, latLng.lng, false);
+        });
 
-      marker.on("dragend", () => {
-        const position = marker.getLatLng();
-        setPrizePosition(position.lat, position.lng, false);
-      });
+        map.on("click", (event: any) => {
+          updatePrizePosition(event.latlng.lat, event.latlng.lng, false);
+        });
 
-      map.on("click", (event: any) => {
-        setPrizePosition(event.latlng.lat, event.latlng.lng, false);
-      });
+        mapRef.current = map;
+        markerRef.current = marker;
+        circleRef.current = circle;
+        setMapReady(true);
 
-      mapInstanceRef.current = map;
-      markerRef.current = marker;
-      circleRef.current = circle;
-
-      setLeafletReady(true);
-
-      setTimeout(() => map.invalidateSize(), 150);
-      setTimeout(() => map.invalidateSize(), 500);
-      setTimeout(() => map.invalidateSize(), 1000);
+        setTimeout(() => {
+          map.invalidateSize();
+        }, 250);
+      } catch (err) {
+        console.error(err);
+        setError("No se pudo cargar el mapa. Revisa que Leaflet esté instalado.");
+      }
     }
 
     setupLeaflet();
 
     return () => {
       cancelled = true;
+
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+        markerRef.current = null;
+        circleRef.current = null;
+      }
     };
   }, []);
 
   useEffect(() => {
-    updateMapLayers(config.latitude, config.longitude, config.activationRadiusMeters);
-  }, [config.latitude, config.longitude, config.activationRadiusMeters]);
+    if (!circleRef.current) return;
+    circleRef.current.setRadius(config.activationRadiusMeters);
+  }, [config.activationRadiusMeters]);
 
-  function updateMapLayers(latitude: number, longitude: number, radius: number) {
-    if (!markerRef.current || !circleRef.current) return;
-
-    const latLng: [number, number] = [latitude, longitude];
-    markerRef.current.setLatLng(latLng);
-    circleRef.current.setLatLng(latLng);
-    circleRef.current.setRadius(radius);
-  }
-
-  function setPrizePosition(
+  function updatePrizePosition(
     latitude: number,
     longitude: number,
-    shouldCenterMap: boolean
+    moveMap = true,
+    zoom = 17,
   ) {
-    setConfig((current) => {
-      const nextConfig = {
-        ...current,
-        latitude,
-        longitude,
-      };
+    const nextLatitude = Number(latitude);
+    const nextLongitude = Number(longitude);
 
-      saveConfig(nextConfig);
-      return nextConfig;
-    });
-
-    updateMapLayers(latitude, longitude, config.activationRadiusMeters);
-
-    if (shouldCenterMap && mapInstanceRef.current) {
-      mapInstanceRef.current.setView([latitude, longitude], 18);
+    if (!Number.isFinite(nextLatitude) || !Number.isFinite(nextLongitude)) {
+      setError("Coordenadas inválidas.");
+      return;
     }
 
-    setStatus("Ubicación del premio actualizada. Guarda o inicia la demo.");
+    setConfig((current) => ({
+      ...current,
+      latitude: nextLatitude,
+      longitude: nextLongitude,
+    }));
+
+    setSaved(false);
+    setError("");
+
+    const nextLatLng: [number, number] = [nextLatitude, nextLongitude];
+
+    if (markerRef.current) {
+      markerRef.current.setLatLng(nextLatLng);
+    }
+
+    if (circleRef.current) {
+      circleRef.current.setLatLng(nextLatLng);
+    }
+
+    if (mapRef.current && moveMap) {
+      mapRef.current.setView(nextLatLng, zoom, {
+        animate: true,
+      });
+
+      setTimeout(() => {
+        mapRef.current?.invalidateSize();
+      }, 200);
+    }
   }
 
-  function updateField<K extends keyof DemoConfig>(key: K, value: DemoConfig[K]) {
-    setConfig((current) => {
-      const nextConfig = {
-        ...current,
-        [key]: value,
-      };
+  async function searchPlaces() {
+    const query = searchText.trim();
 
-      saveConfig(nextConfig);
-      return nextConfig;
-    });
+    if (!query) {
+      setError("Escribe un lugar para buscar.");
+      return;
+    }
 
-    setStatus("Configuración actualizada.");
-  }
-
-  async function useMyGpsAsPrize() {
-    setLoadingGps(true);
-    setStatus("Obteniendo tu ubicación...");
+    setSearching(true);
+    setError("");
+    setSaved(false);
+    setSelectedResultId(null);
 
     try {
-      const location = await getCurrentLocation();
-      setPrizePosition(location.latitude, location.longitude, true);
-      setStatus(
-        `Premio colocado en tu GPS actual. Precisión: ±${Math.round(
-          location.accuracy ?? 0
-        )} m.`
-      );
-    } catch (error) {
-      console.error(error);
-      setStatus(
-        "No pudimos obtener tu GPS. Revisa permisos de ubicación y prueba desde HTTPS/Vercel."
-      );
+      const searchUrl = new URL("https://nominatim.openstreetmap.org/search");
+      searchUrl.searchParams.set("format", "jsonv2");
+      searchUrl.searchParams.set("q", query);
+      searchUrl.searchParams.set("limit", "5");
+      searchUrl.searchParams.set("addressdetails", "1");
+
+      const response = await fetch(searchUrl.toString(), {
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error("No se pudo buscar el lugar.");
+      }
+
+      const results = (await response.json()) as SearchResult[];
+      setSearchResults(results);
+
+      if (results.length === 0) {
+        setError("No encontramos ese lugar. Intenta con una búsqueda más específica.");
+        return;
+      }
+
+      const firstResult = results[0];
+      setSelectedResultId(firstResult.place_id);
+      updatePrizePosition(Number(firstResult.lat), Number(firstResult.lon), true, 16);
+    } catch (err) {
+      console.error(err);
+      setError("No se pudo buscar el lugar. Intenta de nuevo.");
     } finally {
-      setLoadingGps(false);
+      setSearching(false);
     }
   }
 
-  function saveCurrentConfig() {
-    saveConfig(config);
-    setStatus("Configuración guardada correctamente.");
+  function selectSearchResult(result: SearchResult) {
+    setSelectedResultId(result.place_id);
+    updatePrizePosition(Number(result.lat), Number(result.lon), true, 17);
+  }
+
+  function useCurrentGpsAsPrize() {
+    setError("");
+    setSaved(false);
+
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setError("Tu navegador no soporta geolocalización.");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        updatePrizePosition(
+          position.coords.latitude,
+          position.coords.longitude,
+          true,
+          18,
+        );
+      },
+      () => {
+        setError("No pudimos obtener tu GPS. Revisa permisos de ubicación.");
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 12000,
+        maximumAge: 3000,
+      },
+    );
+  }
+
+  function saveConfig() {
+    try {
+      window.localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(config));
+      setSaved(true);
+      setError("");
+    } catch {
+      setSaved(false);
+      setError("No se pudo guardar la configuración.");
+    }
   }
 
   return (
     <main style={pageStyle}>
+      <style>{`
+        .leaflet-container {
+          width: 100%;
+          height: 100%;
+          position: relative;
+          overflow: hidden;
+          touch-action: pan-x pan-y;
+          background: #111;
+          font-family: inherit;
+        }
+
+        .leaflet-pane,
+        .leaflet-tile,
+        .leaflet-marker-icon,
+        .leaflet-marker-shadow,
+        .leaflet-tile-container,
+        .leaflet-pane > svg,
+        .leaflet-pane > canvas,
+        .leaflet-zoom-box,
+        .leaflet-image-layer,
+        .leaflet-layer {
+          position: absolute;
+          left: 0;
+          top: 0;
+        }
+
+        .leaflet-tile,
+        .leaflet-marker-icon,
+        .leaflet-marker-shadow {
+          user-select: none;
+          -webkit-user-drag: none;
+        }
+
+        .leaflet-control-container .leaflet-top,
+        .leaflet-control-container .leaflet-bottom {
+          position: absolute;
+          z-index: 1000;
+          pointer-events: none;
+        }
+
+        .leaflet-control-container .leaflet-top {
+          top: 10px;
+        }
+
+        .leaflet-control-container .leaflet-right {
+          right: 10px;
+        }
+
+        .leaflet-control-container .leaflet-bottom {
+          bottom: 10px;
+        }
+
+        .leaflet-control-container .leaflet-left {
+          left: 10px;
+        }
+
+        .leaflet-control {
+          float: left;
+          clear: both;
+          pointer-events: auto;
+        }
+
+        .leaflet-control-zoom {
+          border: 1px solid rgba(0,0,0,0.25);
+          border-radius: 10px;
+          overflow: hidden;
+          background: white;
+        }
+
+        .leaflet-control-zoom a {
+          display: block;
+          width: 34px;
+          height: 34px;
+          line-height: 34px;
+          text-align: center;
+          text-decoration: none;
+          color: #111;
+          font-weight: 900;
+          border-bottom: 1px solid rgba(0,0,0,0.18);
+          background: white;
+        }
+
+        .leaflet-control-zoom a:last-child {
+          border-bottom: none;
+        }
+
+        .leaflet-control-attribution {
+          font-size: 10px;
+          background: rgba(255,255,255,0.78);
+          padding: 3px 6px;
+          border-radius: 8px;
+          color: #111;
+        }
+
+        .leaflet-control-attribution a {
+          color: #111;
+        }
+
+        .baseball-prize-marker {
+          background: transparent;
+          border: none;
+        }
+
+        .baseball-prize-marker div {
+          width: 42px;
+          height: 42px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 24px;
+          background: linear-gradient(135deg, #ffdd55, #ff7a00);
+          box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+          border: 3px solid rgba(255,255,255,0.95);
+        }
+      `}</style>
+
       <section style={cardStyle}>
         <div style={headerRowStyle}>
           <div>
-            <p style={eyebrowStyle}>Baseball Rewards AR</p>
-            <h1 style={{ margin: 0 }}>Configuración de demo</h1>
+            <p style={eyebrowStyle}>BASEBALL REWARDS AR</p>
+            <h1 style={titleStyle}>Configuración de demo</h1>
           </div>
 
-          <Link href="/compatible-ar" style={smallLinkStyle}>
+          <Link href="/compatible-ar" style={backButtonStyle}>
             Volver
           </Link>
         </div>
 
         <p style={descriptionStyle}>
-          Toca el mapa o arrastra el marcador para colocar el premio. La demo AR
-          leerá esta configuración sin tocar código.
+          Busca un lugar, toca el mapa o arrastra el marcador para colocar el
+          premio. La demo AR leerá esta configuración sin tocar código.
         </p>
 
-        <div style={mapShellStyle}>
-          {!leafletReady && (
-            <div style={mapLoadingStyle}>Cargando mapa OpenStreetMap...</div>
+        <div style={searchPanelStyle}>
+          <label style={labelStyle}>Buscar lugar</label>
+          <div style={searchRowStyle}>
+            <input
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  searchPlaces();
+                }
+              }}
+              placeholder="Ej. Estadio Beto Ávila, Veracruz"
+              style={inputStyle}
+            />
+
+            <button
+              type="button"
+              onClick={searchPlaces}
+              disabled={searching}
+              style={compactButtonStyle}
+            >
+              {searching ? "Buscando..." : "Buscar"}
+            </button>
+          </div>
+
+          {searchResults.length > 0 && (
+            <div style={resultsListStyle}>
+              {searchResults.map((result) => (
+                <button
+                  key={result.place_id}
+                  type="button"
+                  onClick={() => selectSearchResult(result)}
+                  style={{
+                    ...resultButtonStyle,
+                    ...(selectedResultId === result.place_id
+                      ? selectedResultButtonStyle
+                      : {}),
+                  }}
+                >
+                  <strong style={{ display: "block" }}>
+                    {selectedResultId === result.place_id ? "🎯 " : "📍 "}
+                    {result.display_name.split(",")[0]}
+                  </strong>
+                  <span style={{ opacity: 0.72 }}>{result.display_name}</span>
+                </button>
+              ))}
+            </div>
           )}
+        </div>
+
+        <div style={mapWrapperStyle}>
           <div ref={mapDivRef} style={mapStyle} />
+          {!mapReady && <div style={mapLoadingStyle}>Cargando mapa...</div>}
         </div>
 
         <div style={formGridStyle}>
-          <label style={labelStyle}>
-            Nombre del premio
+          <label style={fieldStyle}>
+            <span style={labelStyle}>Nombre del premio</span>
             <input
               value={config.prizeName}
-              onChange={(event) => updateField("prizeName", event.target.value)}
+              onChange={(event) => {
+                setSaved(false);
+                setConfig((current) => ({
+                  ...current,
+                  prizeName: event.target.value,
+                }));
+              }}
               style={inputStyle}
             />
           </label>
 
-          <label style={labelStyle}>
-            Radio de activación en metros
+          <label style={fieldStyle}>
+            <span style={labelStyle}>Radio de activación en metros</span>
             <input
               type="number"
               min={5}
+              max={1000}
               value={config.activationRadiusMeters}
-              onChange={(event) =>
-                updateField(
-                  "activationRadiusMeters",
-                  Math.max(5, Number(event.target.value) || 5)
-                )
-              }
-              style={inputStyle}
-            />
-          </label>
+              onChange={(event) => {
+                setSaved(false);
+                const nextRadius = Number(event.target.value);
 
-          <label style={labelStyle}>
-            Latitud
-            <input
-              type="number"
-              value={config.latitude}
-              onChange={(event) =>
-                updateField("latitude", Number(event.target.value))
-              }
-              style={inputStyle}
-            />
-          </label>
-
-          <label style={labelStyle}>
-            Longitud
-            <input
-              type="number"
-              value={config.longitude}
-              onChange={(event) =>
-                updateField("longitude", Number(event.target.value))
-              }
+                setConfig((current) => ({
+                  ...current,
+                  activationRadiusMeters: Number.isFinite(nextRadius)
+                    ? nextRadius
+                    : current.activationRadiusMeters,
+                }));
+              }}
               style={inputStyle}
             />
           </label>
         </div>
 
-        <button
-          onClick={() => updateField("demoLocal", !config.demoLocal)}
-          style={{
-            ...toggleButtonStyle,
-            background: config.demoLocal
-              ? "linear-gradient(135deg,#2cff8f,#16c784)"
-              : "rgba(255,255,255,0.10)",
-            color: config.demoLocal ? "#07140d" : "white",
-          }}
-        >
-          {config.demoLocal
-            ? "Demo local: ACTIVADA"
-            : "Demo local: DESACTIVADA / GPS real"}
-        </button>
+        <div style={coordinatesGridStyle}>
+          <div style={coordinateBoxStyle}>
+            <span>Latitud</span>
+            <strong>{config.latitude.toFixed(6)}</strong>
+          </div>
 
-        <p style={helperTextStyle}>
-          Demo local simula que el usuario está cerca del premio. GPS real usa la
-          ubicación real del celular.
-        </p>
+          <div style={coordinateBoxStyle}>
+            <span>Longitud</span>
+            <strong>{config.longitude.toFixed(6)}</strong>
+          </div>
+        </div>
+
+        <label style={toggleRowStyle}>
+          <input
+            type="checkbox"
+            checked={config.demoLocal}
+            onChange={(event) => {
+              setSaved(false);
+              setConfig((current) => ({
+                ...current,
+                demoLocal: event.target.checked,
+              }));
+            }}
+          />
+          <span>
+            <strong>Demo local</strong>
+            <small>
+              Simula al usuario cerca del premio. Apágalo para usar GPS real.
+            </small>
+          </span>
+        </label>
 
         <div style={actionsGridStyle}>
-          <button
-            onClick={useMyGpsAsPrize}
-            style={secondaryButtonStyle}
-            disabled={loadingGps}
-          >
-            {loadingGps ? "Obteniendo GPS..." : "Usar mi GPS como premio"}
+          <button type="button" onClick={useCurrentGpsAsPrize} style={secondaryButtonStyle}>
+            📍 Usar mi GPS como premio
           </button>
 
-          <button onClick={saveCurrentConfig} style={secondaryButtonStyle}>
+          <button type="button" onClick={saveConfig} style={primaryButtonStyle}>
             Guardar configuración
           </button>
         </div>
 
-        <Link href="/compatible-ar" style={primaryLinkStyle}>
-          Iniciar demo AR
+        <Link href="/compatible-ar" style={startDemoButtonStyle}>
+          Iniciar demo
         </Link>
 
-        {status && <p style={statusStyle}>{status}</p>}
+        {saved && <p style={successTextStyle}>✅ Configuración guardada.</p>}
+        {error && <p style={errorTextStyle}>{error}</p>}
       </section>
     </main>
   );
 }
 
 const pageStyle: CSSProperties = {
-  minHeight: "100vh",
+  minHeight: "100svh",
   background:
-    "radial-gradient(circle at top, rgba(255,210,74,0.18), transparent 32%), #050505",
+    "radial-gradient(circle at top, rgba(255,210,74,0.16), transparent 34%), #050505",
   color: "white",
-  padding: 18,
+  padding: "calc(env(safe-area-inset-top, 0px) + 18px) 16px calc(env(safe-area-inset-bottom, 0px) + 28px)",
 };
 
 const cardStyle: CSSProperties = {
   width: "100%",
   maxWidth: 760,
   margin: "0 auto",
+  padding: "clamp(18px, 4vw, 28px)",
+  borderRadius: 28,
   background: "rgba(255,255,255,0.08)",
-  border: "1px solid rgba(255,255,255,0.12)",
-  borderRadius: 26,
-  padding: 18,
-  boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
+  border: "1px solid rgba(255,255,255,0.14)",
+  boxShadow: "0 18px 54px rgba(0,0,0,0.42)",
   backdropFilter: "blur(10px)",
 };
 
 const headerRowStyle: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
-  alignItems: "center",
   gap: 14,
+  alignItems: "flex-start",
 };
 
 const eyebrowStyle: CSSProperties = {
-  margin: "0 0 4px",
+  margin: 0,
   color: "#ffdd55",
-  fontSize: 12,
-  fontWeight: 900,
-  textTransform: "uppercase",
-  letterSpacing: 1,
+  fontSize: 13,
+  fontWeight: 950,
+  letterSpacing: 2.4,
+};
+
+const titleStyle: CSSProperties = {
+  margin: "8px 0 0",
+  fontSize: "clamp(28px, 7vw, 42px)",
+  lineHeight: 1.04,
 };
 
 const descriptionStyle: CSSProperties = {
-  margin: "12px 0 16px",
-  opacity: 0.82,
-  lineHeight: 1.45,
+  margin: "18px 0",
+  color: "rgba(255,255,255,0.82)",
+  fontSize: 16,
+  lineHeight: 1.48,
 };
 
-const mapShellStyle: CSSProperties = {
+const backButtonStyle: CSSProperties = {
+  flexShrink: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "12px 16px",
+  borderRadius: 999,
+  color: "white",
+  textDecoration: "none",
+  fontWeight: 900,
+  background: "rgba(255,255,255,0.12)",
+  border: "1px solid rgba(255,255,255,0.14)",
+};
+
+const searchPanelStyle: CSSProperties = {
+  display: "grid",
+  gap: 10,
+  marginBottom: 14,
+  padding: 12,
+  borderRadius: 18,
+  background: "rgba(0,0,0,0.30)",
+  border: "1px solid rgba(255,255,255,0.10)",
+};
+
+const searchRowStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0, 1fr) auto",
+  gap: 10,
+};
+
+const compactButtonStyle: CSSProperties = {
+  border: "none",
+  borderRadius: 16,
+  padding: "0 16px",
+  minHeight: 50,
+  fontWeight: 950,
+  color: "#111",
+  background: "linear-gradient(135deg, #ffdd55, #ff7a00)",
+};
+
+const resultsListStyle: CSSProperties = {
+  display: "grid",
+  gap: 8,
+  maxHeight: 240,
+  overflowY: "auto",
+  paddingRight: 4,
+};
+
+const resultButtonStyle: CSSProperties = {
+  width: "100%",
+  border: "1px solid rgba(255,255,255,0.12)",
+  borderRadius: 16,
+  padding: 12,
+  background: "rgba(255,255,255,0.08)",
+  color: "white",
+  textAlign: "left",
+  fontSize: 13,
+  lineHeight: 1.35,
+};
+
+const selectedResultButtonStyle: CSSProperties = {
+  border: "1px solid rgba(255,210,74,0.72)",
+  background: "rgba(255,210,74,0.16)",
+};
+
+const mapWrapperStyle: CSSProperties = {
   position: "relative",
-  height: 430,
-  borderRadius: 22,
+  width: "100%",
+  height: "min(62vh, 520px)",
+  minHeight: 330,
   overflow: "hidden",
-  border: "1px solid rgba(255,255,255,0.16)",
-  background: "rgba(0,0,0,0.35)",
-  touchAction: "pan-x pan-y",
+  borderRadius: 24,
+  border: "1px solid rgba(255,255,255,0.14)",
+  background: "#111",
 };
 
 const mapStyle: CSSProperties = {
+  position: "absolute",
+  inset: 0,
   width: "100%",
   height: "100%",
-  minHeight: 430,
-  touchAction: "pan-x pan-y",
 };
 
 const mapLoadingStyle: CSSProperties = {
   position: "absolute",
   inset: 0,
   display: "flex",
-  justifyContent: "center",
   alignItems: "center",
-  zIndex: 2,
-  background: "rgba(0,0,0,0.65)",
-  fontWeight: 800,
+  justifyContent: "center",
+  background: "rgba(0,0,0,0.55)",
+  fontWeight: 900,
 };
 
 const formGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
-  gap: 12,
-  marginTop: 16,
+  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+  gap: 14,
+  marginTop: 18,
+};
+
+const fieldStyle: CSSProperties = {
+  display: "grid",
+  gap: 8,
 };
 
 const labelStyle: CSSProperties = {
-  display: "grid",
-  gap: 6,
   fontSize: 13,
-  fontWeight: 800,
+  fontWeight: 900,
   color: "rgba(255,255,255,0.82)",
 };
 
 const inputStyle: CSSProperties = {
   width: "100%",
-  padding: "13px 14px",
-  borderRadius: 14,
   border: "1px solid rgba(255,255,255,0.16)",
-  background: "rgba(0,0,0,0.35)",
+  borderRadius: 16,
+  padding: "14px 15px",
   color: "white",
-  fontSize: 15,
+  background: "rgba(0,0,0,0.38)",
+  fontSize: 16,
   outline: "none",
 };
 
-const toggleButtonStyle: CSSProperties = {
-  width: "100%",
-  marginTop: 16,
-  padding: "14px 16px",
-  borderRadius: 999,
-  border: "none",
-  fontWeight: 950,
-  fontSize: 15,
+const coordinatesGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 12,
+  marginTop: 14,
 };
 
-const helperTextStyle: CSSProperties = {
-  margin: "8px 0 0",
+const coordinateBoxStyle: CSSProperties = {
+  display: "grid",
+  gap: 4,
+  padding: 14,
+  borderRadius: 16,
+  background: "rgba(255,255,255,0.08)",
+  border: "1px solid rgba(255,255,255,0.10)",
   fontSize: 12,
-  opacity: 0.68,
-  textAlign: "center",
+  color: "rgba(255,255,255,0.70)",
+};
+
+const toggleRowStyle: CSSProperties = {
+  display: "flex",
+  gap: 12,
+  alignItems: "flex-start",
+  marginTop: 16,
+  padding: 14,
+  borderRadius: 18,
+  background: "rgba(255,255,255,0.08)",
+  border: "1px solid rgba(255,255,255,0.10)",
 };
 
 const actionsGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
   gap: 12,
   marginTop: 16,
 };
 
 const secondaryButtonStyle: CSSProperties = {
-  padding: "14px 16px",
-  borderRadius: 16,
   border: "1px solid rgba(255,255,255,0.16)",
+  borderRadius: 999,
+  padding: "14px 18px",
   color: "white",
   background: "rgba(255,255,255,0.10)",
   fontWeight: 900,
-  fontSize: 14,
 };
 
-const primaryLinkStyle: CSSProperties = {
+const primaryButtonStyle: CSSProperties = {
+  border: "none",
+  borderRadius: 999,
+  padding: "14px 18px",
+  color: "#111",
+  background: "linear-gradient(135deg, #ffdd55, #ff7a00)",
+  fontWeight: 950,
+};
+
+const startDemoButtonStyle: CSSProperties = {
   display: "flex",
   justifyContent: "center",
   alignItems: "center",
-  marginTop: 16,
-  padding: "16px 22px",
+  marginTop: 14,
   borderRadius: 999,
-  border: "none",
+  padding: "15px 18px",
   color: "#111",
+  background: "#2cff8f",
   textDecoration: "none",
   fontWeight: 950,
-  fontSize: 16,
-  background:
-    "linear-gradient(135deg, #ffdd55 0%, #ffb02e 45%, #ff7a00 100%)",
-  boxShadow: "0 12px 28px rgba(255, 157, 0, 0.35)",
 };
 
-const smallLinkStyle: CSSProperties = {
-  color: "white",
-  textDecoration: "none",
-  background: "rgba(255,255,255,0.10)",
-  padding: "10px 14px",
-  borderRadius: 999,
-  fontWeight: 850,
-  whiteSpace: "nowrap",
+const successTextStyle: CSSProperties = {
+  margin: "12px 0 0",
+  color: "#8dffb0",
+  fontWeight: 800,
+  textAlign: "center",
 };
 
-const statusStyle: CSSProperties = {
-  margin: "14px 0 0",
-  padding: 12,
-  borderRadius: 14,
-  background: "rgba(0,0,0,0.35)",
-  color: "#ffdd55",
+const errorTextStyle: CSSProperties = {
+  margin: "12px 0 0",
+  color: "#ffb4b4",
   fontWeight: 800,
   textAlign: "center",
 };
