@@ -1298,6 +1298,9 @@ export default function CompatibleARDemo() {
     return "🔎 Busca el premio";
   }
 
+  const isStartButtonDisabled =
+    challengeState === "checkingLocation" || !isInsidePrizeRadius;
+
   if (captured) {
     return (
       <main
@@ -1456,19 +1459,17 @@ export default function CompatibleARDemo() {
               onClick={startExperience}
               style={{
                 ...primaryButtonStyle,
-                opacity: challengeState === "checkingLocation" ? 0.7 : 1,
+                ...(isStartButtonDisabled ? disabledPrimaryButtonStyle : {}),
               }}
-              disabled={
-                challengeState === "checkingLocation" ||
-                (distanceToPrize !== null && !isInsidePrizeRadius)
-              }
+              disabled={isStartButtonDisabled}
+              aria-disabled={isStartButtonDisabled}
             >
               {challengeState === "checkingLocation"
                 ? "Validando ubicación..."
                 : isInsidePrizeRadius
                   ? "Estoy detenido, iniciar reto"
                   : distanceToPrize === null
-                    ? "Validar ubicación"
+                    ? "Calculando ubicación..."
                     : "Acércate para activar"}
             </button>
 
@@ -1785,6 +1786,15 @@ const primaryButtonStyle: CSSProperties = {
   color: "#111",
   background: "linear-gradient(135deg, #ffdd55 0%, #ffb02e 45%, #ff7a00 100%)",
   boxShadow: "0 12px 28px rgba(255, 157, 0, 0.35)",
+};
+
+const disabledPrimaryButtonStyle: CSSProperties = {
+  cursor: "not-allowed",
+  opacity: 0.48,
+  color: "rgba(255,255,255,0.62)",
+  background: "rgba(255,255,255,0.14)",
+  border: "1px solid rgba(255,255,255,0.12)",
+  boxShadow: "none",
 };
 
 const navigationButtonStyle: CSSProperties = {
