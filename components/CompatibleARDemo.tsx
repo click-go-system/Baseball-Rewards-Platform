@@ -1097,26 +1097,6 @@ export default function CompatibleARDemo() {
     startPreviewLocationWatch(latestConfig);
   }
 
-  function moveManual(horizontalDelta: number, verticalDelta: number) {
-    setManualPosition((current) => {
-      const nextVertical = Math.max(
-        0,
-        Math.min(140, current.vertical + verticalDelta),
-      );
-
-      return {
-        horizontal: normalizeAngle(current.horizontal + horizontalDelta),
-        vertical: nextVertical,
-      };
-    });
-  }
-
-  function moveFocusManual(xDelta: number, yDelta: number) {
-    setManualFocusPosition((current) => ({
-      x: clamp(current.x + xDelta, 8, 92),
-      y: clamp(current.y + yDelta, 22, 86),
-    }));
-  }
 
   function updateFocusPositionFromPointer(clientX: number, clientY: number) {
     const layer = focusLayerRef.current;
@@ -1258,9 +1238,6 @@ export default function CompatibleARDemo() {
       return `📍 Acércate al premio: ${Math.round(distanceToPrize)} m`;
     }
 
-    if (controlMode === "sensor" && !hasAnySensor) {
-      return "⏳ Esperando sensores del celular...";
-    }
 
     if (challengeState === "holding") {
       return "✅ Mantén esta posición";
@@ -1351,11 +1328,11 @@ export default function CompatibleARDemo() {
             minHeight: "100dvh",
             color: "white",
             display: "flex",
-            justifyContent: "center",
+            justifyContent: "flex-start",
             alignItems: "center",
             flexDirection: "column",
             textAlign: "center",
-            padding: "28px 24px 34px",
+            padding: "18px 16px 32px",
             gap: 16,
             overflowY: "auto",
             WebkitOverflowScrolling: "touch",
@@ -1373,6 +1350,10 @@ export default function CompatibleARDemo() {
               el reto de enfoque y acerca la pelota con dos dedos hasta
               recolectarla.
             </p>
+
+            <Link href="/demo-config" style={secondaryLinkButtonStyle}>
+              ⚙️ Configurar demo
+            </Link>
 
             <div style={locationPanelStyle}>
               <strong>{config.prizeName}</strong>
@@ -1467,9 +1448,6 @@ export default function CompatibleARDemo() {
                     : "Acércate para activar"}
             </button>
 
-            <Link href="/demo-config" style={secondaryLinkButtonStyle}>
-              ⚙️ Configurar demo
-            </Link>
 
             {error && (
               <p style={{ color: "#ffb4b4", maxWidth: 420 }}>{error}</p>
@@ -1597,7 +1575,7 @@ export default function CompatibleARDemo() {
 
               <div
                 style={{
-                  marginTop: 12,
+                  marginTop: 10,
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr",
                   gap: 10,
@@ -1707,56 +1685,6 @@ export default function CompatibleARDemo() {
 
           {error && !showBall && <div style={errorBoxStyle}>{error}</div>}
 
-          {controlMode === "manual" && cameraReady && !showBall && (
-            <div style={manualControlsWrapperStyle}>
-              <button
-                onClick={() =>
-                  challengeState === "focusChallenge"
-                    ? moveFocusManual(-7, 0)
-                    : moveManual(-8, 0)
-                }
-                style={manualButtonStyle}
-              >
-                ← H
-              </button>
-
-              <div style={{ display: "grid", gap: 8 }}>
-                <button
-                  onClick={() =>
-                    challengeState === "focusChallenge"
-                      ? moveFocusManual(0, -7)
-                      : moveManual(0, -5)
-                  }
-                  style={manualButtonStyle}
-                >
-                  ↑ V
-                </button>
-
-                <button
-                  onClick={() =>
-                    challengeState === "focusChallenge"
-                      ? moveFocusManual(0, 7)
-                      : moveManual(0, 5)
-                  }
-                  style={manualButtonStyle}
-                >
-                  ↓ V
-                </button>
-              </div>
-
-              <button
-                onClick={() =>
-                  challengeState === "focusChallenge"
-                    ? moveFocusManual(7, 0)
-                    : moveManual(8, 0)
-                }
-                style={manualButtonStyle}
-              >
-                H →
-              </button>
-            </div>
-          )}
-
           {challengeState === "focusChallenge" && cameraReady && !showBall && (
             <div style={bottomPillStyle}>Arrastra la mira hacia las señales</div>
           )}
@@ -1824,6 +1752,7 @@ const secondaryLinkButtonStyle: CSSProperties = {
 
 const introCardStyle: CSSProperties = {
   width: "100%",
+  marginTop: 0,
   maxWidth: 440,
   background: "rgba(255,255,255,0.08)",
   border: "1px solid rgba(255,255,255,0.12)",
@@ -2002,27 +1931,6 @@ const errorBoxStyle: CSSProperties = {
   textAlign: "center",
 };
 
-const manualControlsWrapperStyle: CSSProperties = {
-  position: "fixed",
-  left: 14,
-  right: 14,
-  bottom: 86,
-  zIndex: 5,
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr 1fr",
-  gap: 10,
-  alignItems: "center",
-};
-
-const manualButtonStyle: CSSProperties = {
-  padding: "14px 12px",
-  borderRadius: 16,
-  border: "none",
-  background: "rgba(255,255,255,0.92)",
-  color: "#111",
-  fontWeight: 900,
-  fontSize: 15,
-};
 
 const bottomPillStyle: CSSProperties = {
   position: "fixed",
