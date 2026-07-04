@@ -449,6 +449,9 @@ export default function CompatibleARDemo() {
   const sensorFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const temporaryMessageTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   const locationWatchIdRef = useRef<number | null>(null);
   const previewLocationWatchIdRef = useRef<number | null>(null);
   const focusHoldStartRef = useRef<number | null>(null);
@@ -741,6 +744,24 @@ export default function CompatibleARDemo() {
       clearTimeout(sensorFallbackTimeoutRef.current);
       sensorFallbackTimeoutRef.current = null;
     }
+
+    if (temporaryMessageTimeoutRef.current) {
+      clearTimeout(temporaryMessageTimeoutRef.current);
+      temporaryMessageTimeoutRef.current = null;
+    }
+  }
+
+  function showTemporaryMessage(message: string, duration = 3000) {
+    setError(message);
+
+    if (temporaryMessageTimeoutRef.current) {
+      clearTimeout(temporaryMessageTimeoutRef.current);
+    }
+
+    temporaryMessageTimeoutRef.current = setTimeout(() => {
+      setError("");
+      temporaryMessageTimeoutRef.current = null;
+    }, duration);
   }
 
   async function requestOrientationPermission() {
@@ -759,8 +780,9 @@ export default function CompatibleARDemo() {
           await DeviceOrientationEventTyped.requestPermission();
 
         if (permission !== "granted") {
-          setError(
+          showTemporaryMessage(
             "No se concedió permiso para usar el movimiento del celular. Se activará modo compatible.",
+            3000,
           );
           setControlMode("manual");
           return false;
@@ -770,8 +792,9 @@ export default function CompatibleARDemo() {
       return true;
     } catch (err) {
       console.error(err);
-      setError(
+      showTemporaryMessage(
         "No se pudo solicitar permiso de movimiento. Se activará modo compatible.",
+        3000,
       );
       setControlMode("manual");
       return false;
@@ -854,8 +877,9 @@ export default function CompatibleARDemo() {
 
           if (!hasUsefulSensor) {
             setControlMode("manual");
-            setError(
+            showTemporaryMessage(
               "Tu navegador no entregó sensores de movimiento. Activamos modo compatible.",
+              3000,
             );
           }
 
