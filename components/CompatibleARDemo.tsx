@@ -780,6 +780,9 @@ export default function CompatibleARDemo() {
           await DeviceOrientationEventTyped.requestPermission();
 
         if (permission !== "granted") {
+          showTemporaryMessage(
+            "No se concedió permiso para usar el movimiento del celular. Se activará modo compatible.",
+          );
           setControlMode("manual");
           return false;
         }
@@ -788,6 +791,9 @@ export default function CompatibleARDemo() {
       return true;
     } catch (err) {
       console.error(err);
+      showTemporaryMessage(
+        "No se pudo solicitar permiso de movimiento. Se activará modo compatible.",
+      );
       setControlMode("manual");
       return false;
     }
@@ -878,7 +884,9 @@ export default function CompatibleARDemo() {
 
           if (!hasUsefulSensor) {
             setControlMode("manual");
-            // No mostramos aviso de sensores: el juego permite control táctil/manual.
+            showTemporaryMessage(
+              "Tu navegador no entregó sensores de movimiento. Activamos modo compatible.",
+            );
           }
 
           return current;
@@ -1097,6 +1105,26 @@ export default function CompatibleARDemo() {
     startPreviewLocationWatch(latestConfig);
   }
 
+  function moveManual(horizontalDelta: number, verticalDelta: number) {
+    setManualPosition((current) => {
+      const nextVertical = Math.max(
+        0,
+        Math.min(140, current.vertical + verticalDelta),
+      );
+
+      return {
+        horizontal: normalizeAngle(current.horizontal + horizontalDelta),
+        vertical: nextVertical,
+      };
+    });
+  }
+
+  function moveFocusManual(xDelta: number, yDelta: number) {
+    setManualFocusPosition((current) => ({
+      x: clamp(current.x + xDelta, 8, 92),
+      y: clamp(current.y + yDelta, 22, 86),
+    }));
+  }
 
   function updateFocusPositionFromPointer(clientX: number, clientY: number) {
     const layer = focusLayerRef.current;
@@ -1238,6 +1266,9 @@ export default function CompatibleARDemo() {
       return `📍 Acércate al premio: ${Math.round(distanceToPrize)} m`;
     }
 
+    if (controlMode === "sensor" && !hasAnySensor) {
+      return "⏳ Esperando sensores del celular...";
+    }
 
     if (challengeState === "holding") {
       return "✅ Mantén esta posición";
@@ -1317,7 +1348,7 @@ export default function CompatibleARDemo() {
     <main
       style={{
         width: "100vw",
-        height: "100dvh",
+        height: "100vh",
         overflow: "hidden",
         background: "#000",
       }}
@@ -1325,17 +1356,15 @@ export default function CompatibleARDemo() {
       {!started && (
         <section
           style={{
-            minHeight: "100dvh",
+            minHeight: "100vh",
             color: "white",
             display: "flex",
-            justifyContent: "flex-start",
+            justifyContent: "center",
             alignItems: "center",
             flexDirection: "column",
             textAlign: "center",
-            padding: "18px 16px 32px",
+            padding: 24,
             gap: 16,
-            overflowY: "auto",
-            WebkitOverflowScrolling: "touch",
             background:
               "radial-gradient(circle at top, rgba(255,210,74,0.20), transparent 34%), #050505",
           }}
@@ -1350,10 +1379,6 @@ export default function CompatibleARDemo() {
               el reto de enfoque y acerca la pelota con dos dedos hasta
               recolectarla.
             </p>
-
-            <Link href="/demo-config" style={secondaryLinkButtonStyle}>
-              ⚙️ Configurar demo
-            </Link>
 
             <div style={locationPanelStyle}>
               <strong>{config.prizeName}</strong>
@@ -1448,6 +1473,9 @@ export default function CompatibleARDemo() {
                     : "Acércate para activar"}
             </button>
 
+            <Link href="/demo-config" style={secondaryLinkButtonStyle}>
+              ⚙️ Configurar demo
+            </Link>
 
             {error && (
               <p style={{ color: "#ffb4b4", maxWidth: 420 }}>{error}</p>
@@ -1575,7 +1603,7 @@ export default function CompatibleARDemo() {
 
               <div
                 style={{
-                  marginTop: 10,
+                  marginTop: 12,
                   display: "grid",
                   gridTemplateColumns: "1fr 1fr",
                   gap: 10,
@@ -1685,6 +1713,56 @@ export default function CompatibleARDemo() {
 
           {error && !showBall && <div style={errorBoxStyle}>{error}</div>}
 
+          {controlMode === "manual" && cameraReady && !showBall && (
+            <div style={manualControlsWrapperStyle}>
+              <button
+                onClick={() =>
+                  challengeState === "focusChallenge"
+                    ? moveFocusManual(-7, 0)
+                    : moveManual(-8, 0)
+                }
+                style={manualButtonStyle}
+              >
+                ← H
+              </button>
+
+              <div style={{ display: "grid", gap: 8 }}>
+                <button
+                  onClick={() =>
+                    challengeState === "focusChallenge"
+                      ? moveFocusManual(0, -7)
+                      : moveManual(0, -5)
+                  }
+                  style={manualButtonStyle}
+                >
+                  ↑ V
+                </button>
+
+                <button
+                  onClick={() =>
+                    challengeState === "focusChallenge"
+                      ? moveFocusManual(0, 7)
+                      : moveManual(0, 5)
+                  }
+                  style={manualButtonStyle}
+                >
+                  ↓ V
+                </button>
+              </div>
+
+              <button
+                onClick={() =>
+                  challengeState === "focusChallenge"
+                    ? moveFocusManual(7, 0)
+                    : moveManual(8, 0)
+                }
+                style={manualButtonStyle}
+              >
+                H →
+              </button>
+            </div>
+          )}
+
           {challengeState === "focusChallenge" && cameraReady && !showBall && (
             <div style={bottomPillStyle}>Arrastra la mira hacia las señales</div>
           )}
@@ -1752,7 +1830,6 @@ const secondaryLinkButtonStyle: CSSProperties = {
 
 const introCardStyle: CSSProperties = {
   width: "100%",
-  marginTop: 0,
   maxWidth: 440,
   background: "rgba(255,255,255,0.08)",
   border: "1px solid rgba(255,255,255,0.12)",
@@ -1931,6 +2008,27 @@ const errorBoxStyle: CSSProperties = {
   textAlign: "center",
 };
 
+const manualControlsWrapperStyle: CSSProperties = {
+  position: "fixed",
+  left: 14,
+  right: 14,
+  bottom: 86,
+  zIndex: 5,
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr 1fr",
+  gap: 10,
+  alignItems: "center",
+};
+
+const manualButtonStyle: CSSProperties = {
+  padding: "14px 12px",
+  borderRadius: 16,
+  border: "none",
+  background: "rgba(255,255,255,0.92)",
+  color: "#111",
+  fontWeight: 900,
+  fontSize: 15,
+};
 
 const bottomPillStyle: CSSProperties = {
   position: "fixed",
