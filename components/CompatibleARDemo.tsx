@@ -1339,27 +1339,33 @@ export default function CompatibleARDemo() {
     <main
       style={{
         width: "100vw",
-        height: "100vh",
-        overflow: "hidden",
+        minHeight: "100vh",
+        height: started ? "100vh" : "auto",
+        overflow: started ? "hidden" : "auto",
         background: "#000",
       }}
     >
       {!started && (
         <section
           style={{
-            minHeight: "100vh",
+            minHeight: "100dvh",
             color: "white",
             display: "flex",
             justifyContent: "center",
             alignItems: "center",
             flexDirection: "column",
             textAlign: "center",
-            padding: 24,
+            padding: "82px 24px 28px",
             gap: 16,
+            overflowY: "auto",
             background:
               "radial-gradient(circle at top, rgba(255,210,74,0.20), transparent 34%), #050505",
           }}
         >
+          <Link href="/demo-config" style={floatingConfigButtonStyle}>
+            ⚙️ Configuración
+          </Link>
+
           <div style={introCardStyle}>
             <div style={{ fontSize: 52 }}>⚾</div>
 
@@ -1770,6 +1776,26 @@ const primaryButtonStyle: CSSProperties = {
   boxShadow: "0 12px 28px rgba(255, 157, 0, 0.35)",
 };
 
+const floatingConfigButtonStyle: CSSProperties = {
+  position: "fixed",
+  top: 14,
+  right: 14,
+  zIndex: 20,
+  display: "inline-flex",
+  justifyContent: "center",
+  alignItems: "center",
+  padding: "11px 16px",
+  borderRadius: 999,
+  border: "1px solid rgba(255,255,255,0.26)",
+  color: "white",
+  textDecoration: "none",
+  fontWeight: 900,
+  fontSize: 14,
+  background: "rgba(0,0,0,0.62)",
+  boxShadow: "0 10px 24px rgba(0,0,0,0.32)",
+  backdropFilter: "blur(10px)",
+};
+
 const secondaryLinkButtonStyle: CSSProperties = {
   display: "inline-flex",
   justifyContent: "center",
@@ -1788,6 +1814,7 @@ const secondaryLinkButtonStyle: CSSProperties = {
 const introCardStyle: CSSProperties = {
   width: "100%",
   maxWidth: 440,
+  boxSizing: "border-box",
   background: "rgba(255,255,255,0.08)",
   border: "1px solid rgba(255,255,255,0.12)",
   borderRadius: 26,
