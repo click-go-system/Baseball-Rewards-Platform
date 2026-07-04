@@ -449,9 +449,6 @@ export default function CompatibleARDemo() {
   const sensorFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const temporaryMessageTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  );
   const locationWatchIdRef = useRef<number | null>(null);
   const previewLocationWatchIdRef = useRef<number | null>(null);
   const focusHoldStartRef = useRef<number | null>(null);
@@ -745,23 +742,6 @@ export default function CompatibleARDemo() {
       sensorFallbackTimeoutRef.current = null;
     }
 
-    if (temporaryMessageTimeoutRef.current) {
-      clearTimeout(temporaryMessageTimeoutRef.current);
-      temporaryMessageTimeoutRef.current = null;
-    }
-  }
-
-  function showTemporaryMessage(message: string, duration = 3000) {
-    setError(message);
-
-    if (temporaryMessageTimeoutRef.current) {
-      clearTimeout(temporaryMessageTimeoutRef.current);
-    }
-
-    temporaryMessageTimeoutRef.current = setTimeout(() => {
-      setError("");
-      temporaryMessageTimeoutRef.current = null;
-    }, duration);
   }
 
   async function requestOrientationPermission() {
@@ -780,9 +760,6 @@ export default function CompatibleARDemo() {
           await DeviceOrientationEventTyped.requestPermission();
 
         if (permission !== "granted") {
-          showTemporaryMessage(
-            "No se concedió permiso para usar el movimiento del celular. Se activará modo compatible.",
-          );
           setControlMode("manual");
           return false;
         }
@@ -791,9 +768,6 @@ export default function CompatibleARDemo() {
       return true;
     } catch (err) {
       console.error(err);
-      showTemporaryMessage(
-        "No se pudo solicitar permiso de movimiento. Se activará modo compatible.",
-      );
       setControlMode("manual");
       return false;
     }
@@ -884,9 +858,7 @@ export default function CompatibleARDemo() {
 
           if (!hasUsefulSensor) {
             setControlMode("manual");
-            showTemporaryMessage(
-              "Tu navegador no entregó sensores de movimiento. Activamos modo compatible.",
-            );
+            // No mostramos advertencia de sensores porque el reto funciona con touch.
           }
 
           return current;
@@ -1103,27 +1075,6 @@ export default function CompatibleARDemo() {
     const latestConfig = loadConfigFromStorage();
     setConfig(latestConfig);
     startPreviewLocationWatch(latestConfig);
-  }
-
-  function moveManual(horizontalDelta: number, verticalDelta: number) {
-    setManualPosition((current) => {
-      const nextVertical = Math.max(
-        0,
-        Math.min(140, current.vertical + verticalDelta),
-      );
-
-      return {
-        horizontal: normalizeAngle(current.horizontal + horizontalDelta),
-        vertical: nextVertical,
-      };
-    });
-  }
-
-  function moveFocusManual(xDelta: number, yDelta: number) {
-    setManualFocusPosition((current) => ({
-      x: clamp(current.x + xDelta, 8, 92),
-      y: clamp(current.y + yDelta, 22, 86),
-    }));
   }
 
   function updateFocusPositionFromPointer(clientX: number, clientY: number) {
@@ -1348,23 +1299,27 @@ export default function CompatibleARDemo() {
     <main
       style={{
         width: "100vw",
-        height: "100vh",
-        overflow: "hidden",
+        minHeight: "100dvh",
+        height: started ? "100dvh" : "auto",
+        overflow: started ? "hidden" : "auto",
         background: "#000",
+        WebkitOverflowScrolling: "touch",
       }}
     >
       {!started && (
         <section
           style={{
-            minHeight: "100vh",
+            minHeight: "100dvh",
             color: "white",
             display: "flex",
-            justifyContent: "center",
+            justifyContent: "flex-start",
             alignItems: "center",
             flexDirection: "column",
             textAlign: "center",
-            padding: 24,
-            gap: 16,
+            padding:
+              "calc(env(safe-area-inset-top, 0px) + 18px) 14px calc(env(safe-area-inset-bottom, 0px) + 44px)",
+            gap: 14,
+            boxSizing: "border-box",
             background:
               "radial-gradient(circle at top, rgba(255,210,74,0.20), transparent 34%), #050505",
           }}
@@ -1713,56 +1668,6 @@ export default function CompatibleARDemo() {
 
           {error && !showBall && <div style={errorBoxStyle}>{error}</div>}
 
-          {controlMode === "manual" && cameraReady && !showBall && (
-            <div style={manualControlsWrapperStyle}>
-              <button
-                onClick={() =>
-                  challengeState === "focusChallenge"
-                    ? moveFocusManual(-7, 0)
-                    : moveManual(-8, 0)
-                }
-                style={manualButtonStyle}
-              >
-                ← H
-              </button>
-
-              <div style={{ display: "grid", gap: 8 }}>
-                <button
-                  onClick={() =>
-                    challengeState === "focusChallenge"
-                      ? moveFocusManual(0, -7)
-                      : moveManual(0, -5)
-                  }
-                  style={manualButtonStyle}
-                >
-                  ↑ V
-                </button>
-
-                <button
-                  onClick={() =>
-                    challengeState === "focusChallenge"
-                      ? moveFocusManual(0, 7)
-                      : moveManual(0, 5)
-                  }
-                  style={manualButtonStyle}
-                >
-                  ↓ V
-                </button>
-              </div>
-
-              <button
-                onClick={() =>
-                  challengeState === "focusChallenge"
-                    ? moveFocusManual(7, 0)
-                    : moveManual(8, 0)
-                }
-                style={manualButtonStyle}
-              >
-                H →
-              </button>
-            </div>
-          )}
-
           {challengeState === "focusChallenge" && cameraReady && !showBall && (
             <div style={bottomPillStyle}>Arrastra la mira hacia las señales</div>
           )}
@@ -1777,8 +1682,8 @@ export default function CompatibleARDemo() {
 }
 
 const primaryButtonStyle: CSSProperties = {
-  marginTop: 16,
-  padding: "15px 26px",
+  marginTop: 12,
+  padding: "14px 22px",
   borderRadius: 999,
   border: "none",
   fontWeight: 900,
@@ -1819,6 +1724,7 @@ const secondaryLinkButtonStyle: CSSProperties = {
   alignItems: "center",
   width: "100%",
   marginTop: 12,
+  marginBottom: 4,
   padding: "13px 18px",
   borderRadius: 999,
   border: "1px solid rgba(255,255,255,0.22)",
@@ -1831,19 +1737,20 @@ const secondaryLinkButtonStyle: CSSProperties = {
 const introCardStyle: CSSProperties = {
   width: "100%",
   maxWidth: 440,
+  boxSizing: "border-box",
   background: "rgba(255,255,255,0.08)",
   border: "1px solid rgba(255,255,255,0.12)",
-  borderRadius: 26,
-  padding: 22,
+  borderRadius: 24,
+  padding: "18px 16px",
   boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
   backdropFilter: "blur(10px)",
 };
 
 const locationPanelStyle: CSSProperties = {
-  marginTop: 16,
+  marginTop: 14,
   background: "rgba(0,0,0,0.35)",
   borderRadius: 18,
-  padding: 14,
+  padding: 13,
   border: "1px solid rgba(255,255,255,0.10)",
 };
 
@@ -2008,27 +1915,6 @@ const errorBoxStyle: CSSProperties = {
   textAlign: "center",
 };
 
-const manualControlsWrapperStyle: CSSProperties = {
-  position: "fixed",
-  left: 14,
-  right: 14,
-  bottom: 86,
-  zIndex: 5,
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr 1fr",
-  gap: 10,
-  alignItems: "center",
-};
-
-const manualButtonStyle: CSSProperties = {
-  padding: "14px 12px",
-  borderRadius: 16,
-  border: "none",
-  background: "rgba(255,255,255,0.92)",
-  color: "#111",
-  fontWeight: 900,
-  fontSize: 15,
-};
 
 const bottomPillStyle: CSSProperties = {
   position: "fixed",
