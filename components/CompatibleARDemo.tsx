@@ -1362,9 +1362,6 @@ export default function CompatibleARDemo() {
               "radial-gradient(circle at top, rgba(255,210,74,0.20), transparent 34%), #050505",
           }}
         >
-          <Link href="/demo-config" style={floatingConfigButtonStyle}>
-            ⚙️ Configuración
-          </Link>
 
           <div style={introCardStyle}>
             <div style={{ fontSize: 52 }}>⚾</div>
