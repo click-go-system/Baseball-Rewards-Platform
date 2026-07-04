@@ -780,9 +780,6 @@ export default function CompatibleARDemo() {
           await DeviceOrientationEventTyped.requestPermission();
 
         if (permission !== "granted") {
-          showTemporaryMessage(
-            "No se concedió permiso para usar el movimiento del celular. Se activará modo compatible.",
-          );
           setControlMode("manual");
           return false;
         }
@@ -791,9 +788,6 @@ export default function CompatibleARDemo() {
       return true;
     } catch (err) {
       console.error(err);
-      showTemporaryMessage(
-        "No se pudo solicitar permiso de movimiento. Se activará modo compatible.",
-      );
       setControlMode("manual");
       return false;
     }
@@ -884,9 +878,7 @@ export default function CompatibleARDemo() {
 
           if (!hasUsefulSensor) {
             setControlMode("manual");
-            showTemporaryMessage(
-              "Tu navegador no entregó sensores de movimiento. Activamos modo compatible.",
-            );
+            // No mostramos aviso de sensores: el juego permite control táctil/manual.
           }
 
           return current;
@@ -1348,7 +1340,7 @@ export default function CompatibleARDemo() {
     <main
       style={{
         width: "100vw",
-        height: "100vh",
+        height: "100dvh",
         overflow: "hidden",
         background: "#000",
       }}
@@ -1356,15 +1348,17 @@ export default function CompatibleARDemo() {
       {!started && (
         <section
           style={{
-            minHeight: "100vh",
+            minHeight: "100dvh",
             color: "white",
             display: "flex",
             justifyContent: "center",
             alignItems: "center",
             flexDirection: "column",
             textAlign: "center",
-            padding: 24,
+            padding: "28px 24px 34px",
             gap: 16,
+            overflowY: "auto",
+            WebkitOverflowScrolling: "touch",
             background:
               "radial-gradient(circle at top, rgba(255,210,74,0.20), transparent 34%), #050505",
           }}
